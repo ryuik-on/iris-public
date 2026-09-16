@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRIS iOS Dashboard Directions</title>
+<style>
+  :root { color-scheme: dark; --bg:#0c0e12; --panel:#14181f; --text:#e6ecf2; --muted:#8995a3; --blue:#5b9cf5; --green:#6faf91; --orange:#c7915e; --rule:#2a2f38; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:28px; background:#22262d; color:var(--text); font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Hiragino Sans",sans-serif; }
+  h1 { margin:0 0 6px; font-size:22px; } .intro { color:var(--muted); margin:0 0 24px; font-size:13px; }
+  .sheet { display:grid; grid-template-columns:repeat(3, minmax(280px,1fr)); gap:24px; max-width:1180px; margin:auto; }
+  .option h2 { font-size:15px; margin:0 0 5px; } .option p { color:var(--muted); font-size:12px; line-height:1.45; min-height:36px; margin:0 0 10px; }
+  .phone { width:100%; max-width:360px; min-height:690px; margin:auto; padding:13px 12px 18px; border-radius:34px; background:#090b0e; border:1px solid #30343b; box-shadow:0 18px 45px #090b0e66; overflow:hidden; }
+  .island { width:96px; height:25px; margin:0 auto 18px; border-radius:20px; background:#000; }
+  .nav { display:flex; align-items:center; justify-content:space-between; margin:0 9px 18px; } .nav strong { font-size:22px; } .nav span { color:var(--muted); font-size:12px; }
+  .hero { position:relative; padding:20px 18px 19px; border:1px solid #30343b; border-radius:22px; overflow:hidden; background:var(--panel); }
+  .hero:after { content:""; position:absolute; inset:-35% -15%; pointer-events:none; }
+  .a .hero:after { background:radial-gradient(ellipse at 50% 54%, #5b9cf56b 0%, #5b9cf525 25%, transparent 62%); filter:blur(8px); }
+  .b .hero:after { background:radial-gradient(ellipse at 42% 55%, #c7915e6e 0%, transparent 38%), radial-gradient(ellipse at 65% 42%, #5b9cf53d 0%, transparent 47%); filter:blur(16px); transform:rotate(-10deg); }
+  .c .hero:after { background:radial-gradient(ellipse at 50% 100%, #6faf9160 0%, transparent 53%); filter:blur(22px); opacity:.7; }
+  .hero > * { position:relative; z-index:1; }
+  .eyebrow { color:var(--blue); font-size:11px; font-weight:700; letter-spacing:.08em; } .hero h3 { margin:9px 0 4px; font-size:25px; line-height:1.1; } .hero small { color:var(--muted); }
+  .status { display:flex; gap:7px; align-items:center; margin-top:18px; font-size:12px; } .dot { width:8px; height:8px; border-radius:50%; background:var(--green); box-shadow:0 0 14px #6faf9188; }
+  .section { margin:23px 7px 8px; display:flex; justify-content:space-between; align-items:baseline; } .section h4 { margin:0; font-size:14px; } .section span { color:var(--muted); font-size:11px; }
+  .stack { display:grid; gap:8px; } .row { display:flex; align-items:center; gap:12px; padding:14px 13px; border:1px solid #282d35; border-radius:15px; background:#11151a; } .row.selected { border-color:#5b9cf599; background:#182130; } .row.warn { border-color:#c7915e99; }
+  .icon { width:28px; height:28px; display:grid; place-items:center; color:var(--blue); font-size:17px; } .row.warn .icon { color:var(--orange); } .row strong { display:block; font-size:13px; } .row small { color:var(--muted); font-size:10px; }
+  .tabbar { margin-top:23px; padding:11px 3px 3px; display:flex; justify-content:space-around; color:var(--muted); border-top:1px solid #242932; font-size:10px; } .tabbar b { color:var(--blue); }
+  @media (max-width:960px) { body{padding:18px;} .sheet{grid-template-columns:1fr;} .option{max-width:360px;margin:auto;} }
+</style>
+</head>
+<body>
+  <main>
+    <h1>IRIS / iOS dashboard direction study</h1>
+    <p class="intro">共通：#0C0E12の暗い地、中央にだけ現れる“混ざり”。差分は混ざりの場所と強さ。</p>
+    <section class="sheet">
+      <article class="option a"><h2>案A — 中央拡散</h2><p>選択中の主役だけ、中央から青がゆっくり広がる。最も読みやすく、日常利用向き。</p><div class="phone"><div class="island"></div><div class="nav"><strong>今日</strong><span>9月4日</span></div><section class="hero"><div class="eyebrow">NOW / 02</div><h3>チーフ講師業務</h3><small>生徒カルテ・MTG・FBドラフト</small><div class="status"><i class="dot"></i>進行中　次の判断を待っています</div></section><div class="section"><h4>優先キュー</h4><span>4件</span></div><div class="stack"><div class="row selected"><div class="icon">⌁</div><div><strong>チーフ講師業務</strong><small>最終更新 2分前</small></div></div><div class="row"><div class="icon">▤</div><div><strong>授業</strong><small>リンクをまとめて開く</small></div></div><div class="row"><div class="icon">↗</div><div><strong>指導報告</strong><small>報告フォームを開く</small></div></div></div><div class="tabbar"><span><b>⌂</b><br>ホーム</span><span>◷<br>履歴</span><span>⚙<br>設定</span></div></div></article>
+      <article class="option b"><h2>案B — 面の中の渦</h2><p>青と橙が中央で混ざる。ブランド性は強いが、警告色と装飾色の境界管理が必要。</p><div class="phone"><div class="island"></div><div class="nav"><strong>今日</strong><span>9月4日</span></div><section class="hero"><div class="eyebrow">NOW / 02</div><h3>チーフ講師業務</h3><small>生徒カルテ・MTG・FBドラフト</small><div class="status"><i class="dot"></i>進行中　次の判断を待っています</div></section><div class="section"><h4>優先キュー</h4><span>4件</span></div><div class="stack"><div class="row selected"><div class="icon">⌁</div><div><strong>チーフ講師業務</strong><small>最終更新 2分前</small></div></div><div class="row warn"><div class="icon">▤</div><div><strong>授業</strong><small>確認が必要です</small></div></div><div class="row"><div class="icon">↗</div><div><strong>指導報告</strong><small>報告フォームを開く</small></div></div></div><div class="tabbar"><span><b>⌂</b><br>ホーム</span><span>◷<br>履歴</span><span>⚙<br>設定</span></div></div></article>
+      <article class="option c"><h2>案C — 背景にだけ混ざり</h2><p>カードは静かに保ち、セクションの下側にだけ淡い緑が残る。長時間利用に最も穏やか。</p><div class="phone"><div class="island"></div><div class="nav"><strong>今日</strong><span>9月4日</span></div><section class="hero"><div class="eyebrow">NOW / 02</div><h3>チーフ講師業務</h3><small>生徒カルテ・MTG・FBドラフト</small><div class="status"><i class="dot"></i>進行中　次の判断を待っています</div></section><div class="section"><h4>優先キュー</h4><span>4件</span></div><div class="stack"><div class="row selected"><div class="icon">⌁</div><div><strong>チーフ講師業務</strong><small>最終更新 2分前</small></div></div><div class="row"><div class="icon">▤</div><div><strong>授業</strong><small>リンクをまとめて開く</small></div></div><div class="row"><div class="icon">↗</div><div><strong>指導報告</strong><small>報告フォームを開く</small></div></div></div><div class="tabbar"><span><b>⌂</b><br>ホーム</span><span>◷<br>履歴</span><span>⚙<br>設定</span></div></div></article>
+    </section>
+  </main>
+</body>
+</html>

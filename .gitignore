@@ -1,0 +1,22 @@
+node_modules/
+.env
+.env.*
+!.env.example
+dist/
+build/
+*.log
+.DS_Store
+jarvis_memory.db
+*.db-wal
+*.db-shm
+backups/
+tmp/
+coverage/
+.iris/
+*.bak
+
+# Swift helper build products
+swift/iris-speech/.build/
+
+# 下書きの置き場。共有しない。
+.scratch/

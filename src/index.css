@@ -1,0 +1,695 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * IRIS HUD.
+ *
+ * The look is instrument panel rather than chat app: thin rules, corner
+ * brackets, monospace labels, and a cold cyan on near-black. The rule the
+ * whole thing is held to is that decoration must never win an argument with
+ * legibility — the glow is on borders and never on body text, the scanline is
+ * at 2% opacity, and every animation stops for anyone who has asked for
+ * reduced motion.
+ */
+
+/*
+ * 地の色は右レールに合わせてある。
+ *
+ * `#04070c` はほぼ黒で、レールの `#0C0E12` はわずかに青へ寄った暗色。
+ * 並べると別のものに見えるので、**同じ機械の同じ画面として揃える**
+ * — 2026-09-01 の決定「IRIS の見た目は、右レールの意匠に寄せる」。
+ * 文字と添え字はもともとレールと同じ組だったので、そのまま。
+ */
+:root {
+  --hud-bg: #0c0e12;
+  --iris-reading-gradient: linear-gradient(to bottom, rgba(4,8,16,0) 0%, rgba(4,8,16,0.55) 7%, rgba(4,8,16,0.93) 17%, rgba(4,8,16,0.97) 100%);
+  --hud-panel: rgba(20, 24, 31, 0.82);
+  --hud-line: rgba(56, 189, 248, 0.26);
+  --hud-line-strong: rgba(56, 189, 248, 0.65);
+  --hud-accent: #5b9cf5;
+  --hud-accent-dim: #0e7490;
+  --hud-text: #e6ecf2;
+  --hud-muted: #8995a3;
+  --hud-warn: #c7915e;
+  /*
+   * Waiting on a person.
+   *
+   * A colour of its own because the state is its own. Amber says something is
+   * wrong and cyan says everything is normal, and an approval is neither — it
+   * is a thing working exactly as designed that cannot continue without a
+   * decision. Borrowing either would make it read as a fault or as background.
+   * Nothing else in the palette is violet, so it cannot be mistaken for one of
+   * the other five at a glance.
+   */
+  --hud-pending: #c7915e;
+  --hud-danger: #c96d69;
+  --hud-ok: #6faf91;
+}
+
+html, body, #root { height: 100%; }
+
+:root[data-theme='mist'] {
+  color-scheme: light;
+  --hud-bg: #eaf0f2;
+  --hud-panel: rgba(255, 255, 255, 0.88);
+  --hud-text: #293b43;
+  --hud-muted: #61757e;
+  --hud-line: rgba(70, 96, 109, 0.15);
+  --hud-line-strong: #3983a1;
+  --hud-accent: #247ba0;
+  --iris-reading-gradient: linear-gradient(to bottom, rgba(234,240,242,0) 0%, rgba(248,250,251,0.92) 7%, #f8fafb 17%, #f8fafb 100%);
+}
+:root[data-theme='night'] { color-scheme: dark; }
+[data-theme='mist'] body { background: var(--hud-bg); color: var(--hud-text); }
+[data-theme='mist'] .hud-field::before,
+[data-theme='mist'] .hud-visor::before,
+[data-theme='mist'] .hud-glow,
+[data-theme='mist'] .hud-input-link::before { display: none; }
+[data-theme='mist'] .iris-toolbar { border-color: transparent; }
+[data-theme='mist'] .iris-toolbar button { color: #526871; border-radius: 12px; }
+[data-theme='mist'] .iris-toolbar button:hover { background: rgba(255,255,255,0.55); }
+.iris-toolbar button[aria-expanded='true'] { background: rgba(56,189,248,0.12); border-radius: 12px; }
+[data-theme='mist'] .iris-toolbar button[aria-expanded='true'] { background: #d9e9ef; color: #247ba0; }
+.iris-side-panel[aria-hidden='true'] { visibility: hidden; }
+[data-theme='mist'] button:focus-visible { outline: 2px solid #247ba0; outline-offset: 3px; }
+[data-theme='mist'] .hud-input-link .hud-panel {
+  background: rgba(255,255,255,0.9);
+  border: 1px solid rgba(255,255,255,0.95);
+  box-shadow: 0 8px 28px rgba(52,78,90,0.09);
+}
+[data-theme='mist'] .hud-input-link .hud-panel:focus-within {
+  border-color: #8ab3c4;
+  box-shadow: 0 8px 28px rgba(52,78,90,0.09);
+}
+[data-theme='mist'] .hud-input-link input { color: #293b43; }
+[data-theme='mist'] .hud-input-link input::placeholder { color: #677b84; }
+[data-theme='mist'] .hud-input-link textarea { color: #293b43; }
+[data-theme='mist'] .hud-input-link textarea::placeholder { color: #677b84; }
+[data-theme='mist'] .hud-input-link button { border-color: rgba(70,96,109,0.16); }
+[data-theme='mist'] .hud-input-link button[type='submit']:not(:disabled) { background: #247ba0; color: white; }
+[data-theme='mist'] .hud-input-link button[type='submit']:disabled { background: #e4ecef; color: #71848d; }
+[data-theme='mist'] :is(.text-zinc-100,.text-zinc-200,.text-zinc-300,.text-zinc-400) { color: #344b56; }
+[data-theme='mist'] :is(.text-zinc-500,.text-zinc-600,.text-zinc-700) { color: #61757e; }
+[data-theme='mist'] .iris-core-fallback { filter: invert(1) hue-rotate(180deg); mix-blend-mode: multiply; }
+[data-theme='mist'] :is(.iris-side-panel,.iris-answer-panel) {
+  background: #f8fafb;
+  border-color: rgba(70,96,109,0.10);
+}
+[data-theme='mist'] .iris-side-panel .hud-panel {
+  border-radius: 12px;
+  box-shadow: none;
+}
+[data-theme='mist'] .iris-side-panel button:hover { background-color: #eaf0f2; }
+[data-theme='mist'] .iris-side-panel .hud-label { color: #526871; }
+[data-theme='mist'] .iris-side-panel [class*='text-sky-'] { color: #24708d; }
+[data-theme='mist'] .iris-side-panel [class*='text-zinc-'] { color: #526871; }
+[data-theme='mist'] .iris-side-panel summary { border-top: 1px solid var(--hud-line); }
+[data-theme='mist'] #iris-history-panel input[type='search'] { color: #293b43; }
+#iris-history-panel input[type='search']::-webkit-search-cancel-button { -webkit-appearance: none; }
+[data-theme='mist'] #iris-history-panel input[type='search']::placeholder { color: #61757e; }
+[data-theme='mist'] #iris-history-panel mark { background: #d9e9ef; color: #24556a; border-radius: 2px; }
+[data-theme='mist'] .iris-task-details summary { border-top: 0; }
+[data-theme='mist'] :is(.iris-side-panel,.iris-answer-panel,.iris-reading-host) :is(.text-sky-100,.text-sky-200,.text-sky-300,.text-sky-400) { color: #24708d; }
+[data-theme='mist'] :is(.iris-answer-panel,.iris-reading-host) strong { color: #253e49; font-weight: 600; }
+[data-theme='mist'] :is(.iris-answer-panel,.iris-reading-host) code { color: #24556a; background: #e7eff2; border-radius: 4px; }
+[data-theme='mist'] :is(.iris-answer-panel,.iris-reading-host) pre { background: #e7eff2; border-radius: 10px; border-color: var(--hud-line); }
+[data-theme='mist'] :is(.iris-answer-panel,.iris-reading-host) :is(.hud-label,th) { color: #24556a; }
+[data-theme='mist'] :is(.iris-answer-panel,.iris-reading-host) :is(th,td) { border-color: var(--hud-line); }
+[data-theme='mist'] .hud-scroll { scrollbar-color: #aabdc5 transparent; }
+.iris-reading-active {
+    background: var(--hud-bg);
+    border-radius: 20px;
+    margin: 190px 20px calc(136px + var(--iris-composer-extra, 0px) + var(--iris-status-height, 0px));
+    box-shadow: 0 8px 28px rgba(52,78,90,0.04);
+  }
+  [data-theme='mist'] .iris-reading-active { background: #f8fafb; }
+  .hud-field:has(.iris-reading-active) .hud-visor {
+    align-items: flex-start;
+  }
+  .hud-field:has(.iris-reading-active) .iris-nebula {
+    width: 200px !important;
+    height: 200px !important;
+    flex-shrink: 0;
+    transform: none;
+    margin-top: 64px;
+  }
+  .hud-field:has(.iris-reading-active) .hud-visor::before {
+    display: block;
+    top: 164px;
+    width: 300px;
+    height: 240px;
+    background: radial-gradient(ellipse, color-mix(in srgb, var(--hud-accent) 12%, transparent), transparent 68%);
+  }
+  .iris-approval .hud-panel { background: var(--hud-bg); border-color: var(--hud-line); }
+  .iris-approval details { border-color: var(--hud-line); border-radius: 10px; }
+  .iris-approval button:focus-visible { outline: 2px solid var(--hud-accent); outline-offset: 3px; }
+  [data-theme='mist'] .iris-approval .iris-approval-primary { background: #247ba0; color: white; }
+@media (max-width: 639px) {
+  .iris-reading-active {
+    margin: 160px 12px calc(136px + var(--iris-composer-extra, 0px) + var(--iris-status-height, 0px));
+  }
+  .hud-field:has(.iris-reading-active) .iris-nebula { width: 156px !important; height: 156px !important; }
+}
+
+body {
+  background: var(--hud-bg);
+  color: var(--hud-text);
+  font-feature-settings: 'tnum' 1;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* The room behind the instruments: a faint grid with a slow drift. */
+.hud-field {
+  position: relative;
+  isolation: isolate;
+}
+/*
+ * The grid that used to be here is gone.
+ *
+ * It represented nothing. Forty-pixel squares behind everything, at half
+ * opacity, present whether or not anything was happening — the visual
+ * equivalent of a stock texture, and the fastest way to make an interface look
+ * assembled rather than designed. What replaces it is the curvature below,
+ * which at least describes a shape the rest of the layout follows.
+ */
+.hud-field::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -2;
+  background:
+    radial-gradient(ellipse 120% 80% at 50% 120%, rgba(56, 189, 248, 0.05), transparent 60%);
+}
+
+/* A cold light source above the panel, so the black has somewhere to fall to. */
+.hud-field > * { position: relative; }
+
+/*
+ * Anything that means to leave the flex row says so with this class.
+ *
+ * Third time in this file. The rule above puts every direct child into the
+ * row, so a Tailwind `fixed` class on one of them is silently overridden and
+ * the element takes a column of real width instead. It parked the core beside
+ * the rail once; then it opened a blank forty-pixel strip down the left edge
+ * of a phone and pushed the conversation off the right, which is what the
+ * reopen mark for the answer panel was doing. The escape hatch has a name now
+ * so the next element does not have to rediscover it.
+ */
+.hud-field > .hud-fixed { position: fixed; }
+
+/*
+ * The visor: the layer everything else floats over.
+ *
+ * Needs to outrank `.hud-field > *` above, which sets position: relative on
+ * every direct child and would otherwise drop this into the flex row — which
+ * it did, parking the core in a column of its own to the left of the rail
+ * instead of in the middle of the screen.
+ */
+.hud-field > .hud-visor {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+}
+
+/*
+ * Ambient light behind the core, and nothing else.
+ *
+ * The field's faint trails fall all the way to black, which is why they read
+ * as fibres drawn on a void rather than as light in a space — at those
+ * magnitudes a channel is a single-digit integer and the colour is mostly
+ * rounding. Lifting the whole page would fix that and change the contrast of
+ * every other surface in IRIS, so this lifts only what is behind the core.
+ *
+ * An ellipse, much larger than the core, with a long tail of stops: a circle
+ * sized near the core would draw a halo, and a halo is a ring, which is the
+ * one shape this spent three versions escaping. Nothing here should have a
+ * findable edge.
+ */
+/*
+ * The thread between the core and the input.
+ *
+ * The box at the bottom was a box at the bottom — the same control any web
+ * form has, sharing a screen with something that is meant to read as an
+ * assistant rather than a page. This is a single hairline of light rising from
+ * the field to the caret, so that typing goes somewhere rather than into an
+ * element.
+ *
+ * It is one gradient on a pseudo-element, animating nothing. Focus changes an
+ * opacity, which the compositor handles without touching layout, and reduced
+ * motion has nothing to disable because nothing moves.
+ */
+/*
+ * The reading layer's scrollbar, present but not furniture.
+ *
+ * A default bar down the side of a reading surface is the loudest thing on a
+ * dark screen and says "widget" about something meant to read as a page. This
+ * keeps the affordance — you can still see and grab it — and stops it being
+ * the first thing the eye lands on.
+ */
+.hud-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(125, 211, 252, 0.14) transparent;
+}
+
+.hud-scroll::-webkit-scrollbar { width: 8px; }
+.hud-scroll::-webkit-scrollbar-track { background: transparent; }
+.hud-scroll::-webkit-scrollbar-thumb {
+  background: rgba(125, 211, 252, 0.13);
+  border-radius: 4px;
+}
+.hud-scroll:hover::-webkit-scrollbar-thumb { background: rgba(125, 211, 252, 0.26); }
+
+.hud-input-link {
+  position: absolute;
+}
+
+.hud-input-link::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: 100%;
+  width: 1px;
+  height: 46px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  background: linear-gradient(to bottom, rgba(56, 189, 248, 0) 0%, rgba(56, 189, 248, 0.16) 100%);
+  opacity: 0.55;
+  transition: opacity 400ms ease, height 400ms ease;
+}
+
+.hud-input-link:focus-within::before {
+  opacity: 1;
+  height: 62px;
+}
+
+/* And the field itself lifts very slightly when it has the caret. */
+.hud-input-link:focus-within /**
+ * 押したことが、押した場所で分かる。
+ *
+ * 「押しても押せてるのか分からない」が続いていた。原因は二つで、
+ * **押した瞬間に何も起きない**ことと、**終わったことをその場で言わない**こと。
+ *
+ * 前者はこれ。押しているあいだ、わずかに沈んで明るくなる。100ms 未満で
+ * 戻るので邪魔にならず、**指が離れる前に見える。**
+ *
+ * 後者は `hud-done` — 押した釦そのものが結果になる（参考にした案が
+ * まさにそれで、釦が「Task Done」に変わる）。別の場所に出す通知は、
+ * 見る場所を覚えていないと届かない。
+ */
+.hud-press {
+  transition: transform 120ms cubic-bezier(0.4, 0, 0.2, 1), filter 120ms;
+}
+.hud-press:active:not(:disabled) {
+  transform: scale(0.94);
+  filter: brightness(1.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-press:active:not(:disabled) { transform: none; }
+}
+
+/**
+ * 終わったことを、その場で言う。**動きごと。**
+ *
+ * 色と文字を入れ替えるだけにしていたが、**入れ替わりは動きではない**
+ * — 目を離していると起きたことに気づけない。参考にした案（Submitted Task）
+ * が動きなのは飾りではなく、**変化そのものが合図**だから。
+ *
+ * 一度だけ、220ms。跳ねすぎると「処理中」に見えるので、行き過ぎは 3% で
+ * 止める。
+ */
+@keyframes hud-settle {
+  0%   { transform: scale(0.92); opacity: 0.4; }
+  60%  { transform: scale(1.03); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.hud-done {
+  color: var(--hud-ok) !important;
+  animation: hud-settle 220ms cubic-bezier(0.34, 1.3, 0.64, 1) both;
+}
+
+/** 終わりの印。線が引かれるように出る。 */
+@keyframes hud-tick {
+  from { stroke-dashoffset: 14; }
+  to   { stroke-dashoffset: 0; }
+}
+.hud-tick path {
+  stroke-dasharray: 14;
+  animation: hud-tick 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-done { animation: none; }
+  .hud-tick path { animation: none; stroke-dashoffset: 0; }
+}
+
+/**
+ * 前に浮いているもの。
+ *
+ * 後ろを透かし、丸くし、影を落とす。**三つ揃って初めて浮く**
+ * — 影だけなら板が貼ってあるように見えるし、透けているだけなら背景の一部に
+ * なる。
+ *
+ * ぼかしは背後にあるのが核だから成立する。**何が後ろに来るか分からない面
+ * では使わない**（帯で一度やって、明るい応用の上で文字が飛んだ）。
+ */
+.hud-float {
+  background: rgba(12, 14, 18, 0.72);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow:
+    0 18px 40px -12px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.hud-panel {
+  box-shadow: 0 0 26px -6px rgba(56, 189, 248, 0.22);
+}
+
+.hud-visor::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 128vmin;
+  height: 104vmin;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  /*
+   * Stronger than the first attempt, which was too faint to do its job.
+   *
+   * Its job is arithmetic before it is atmosphere: the field's faint trails end
+   * up at values where a channel is a single-digit integer, and there green
+   * and blue round together — half the dark pixels came out at exactly 180°, a
+   * green cyan, which is the dirty cast around the core. A dark pixel of
+   * (0,3,3) is unrecoverable on black and unambiguous over navy. This cannot
+   * be measured on the canvas, because what fixes it is underneath.
+   *
+   * The first version was set at the level that did that arithmetic and no
+   * more, and it was invisible — the numbers moved and the picture did not.
+   * These values are about three times that, tried against the running field
+   * rather than reasoned about: at roughly half this the hollow only begins to
+   * lift, and at nearly twice it the ellipse itself becomes findable at the
+   * left and right edges, which is the failure this shape exists to avoid.
+   * Here the core sits in a pool of light with no edge to locate.
+   *
+   * It dips in the middle rather than peaking there. Peaking at the centre
+   * lit the hollow, and the hollow is the one part of this that has to stay
+   * dark — so the brightest part of the ground sits under the band, around
+   * 30% out, and falls away both ways. The inner falloff is gradual enough
+   * not to read as a second ring behind the first, which is the obvious way
+   * for this idea to go wrong.
+   */
+  background: radial-gradient(
+    ellipse at center,
+    rgba(20, 34, 72, 0.12) 0%,
+    rgba(24, 42, 90, 0.07) 24%,
+    transparent 64%
+  );
+}
+
+.iris-nebula {
+  position: relative;
+  pointer-events: none;
+}
+.iris-nebula canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+.iris-core-fallback {
+  position: absolute;
+  inset: 14.5%;
+  width: 71%;
+  height: 71%;
+  object-fit: contain;
+  mix-blend-mode: screen;
+}
+.hud-glow {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse 70% 45% at 50% -12%, rgba(56, 189, 248, 0.14), transparent 70%),
+    radial-gradient(ellipse 45% 40% at 92% 8%, rgba(56, 189, 248, 0.07), transparent 70%);
+}
+
+/* A panel with machined corners. */
+/**
+ * 押したことが、押した場所で分かる。
+ *
+ * 「押しても押せてるのか分からない」が続いていた。原因は二つで、
+ * **押した瞬間に何も起きない**ことと、**終わったことをその場で言わない**こと。
+ *
+ * 前者はこれ。押しているあいだ、わずかに沈んで明るくなる。100ms 未満で
+ * 戻るので邪魔にならず、**指が離れる前に見える。**
+ *
+ * 後者は `hud-done` — 押した釦そのものが結果になる（参考にした案が
+ * まさにそれで、釦が「Task Done」に変わる）。別の場所に出す通知は、
+ * 見る場所を覚えていないと届かない。
+ */
+.hud-press {
+  transition: transform 120ms cubic-bezier(0.4, 0, 0.2, 1), filter 120ms;
+}
+.hud-press:active:not(:disabled) {
+  transform: scale(0.94);
+  filter: brightness(1.35);
+}
+@media (prefers-reduced-motion: reduce) {
+  .hud-press:active:not(:disabled) { transform: none; }
+}
+
+/**
+ * 終わったことを、その場で言う。**動きごと。**
+ *
+ * 色と文字を入れ替えるだけにしていたが、**入れ替わりは動きではない**
+ * — 目を離していると起きたことに気づけない。参考にした案（Submitted Task）
+ * が動きなのは飾りではなく、**変化そのものが合図**だから。
+ *
+ * 一度だけ、220ms。跳ねすぎると「処理中」に見えるので、行き過ぎは 3% で
+ * 止める。
+ */
+@keyframes hud-settle {
+  0%   { transform: scale(0.92); opacity: 0.4; }
+  60%  { transform: scale(1.03); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+.hud-done {
+  color: var(--hud-ok) !important;
+  animation: hud-settle 220ms cubic-bezier(0.34, 1.3, 0.64, 1) both;
+}
+
+/** 終わりの印。線が引かれるように出る。 */
+@keyframes hud-tick {
+  from { stroke-dashoffset: 14; }
+  to   { stroke-dashoffset: 0; }
+}
+.hud-tick path {
+  stroke-dasharray: 14;
+  animation: hud-tick 260ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hud-done { animation: none; }
+  .hud-tick path { animation: none; stroke-dashoffset: 0; }
+}
+
+/**
+ * 前に浮いているもの。
+ *
+ * 後ろを透かし、丸くし、影を落とす。**三つ揃って初めて浮く**
+ * — 影だけなら板が貼ってあるように見えるし、透けているだけなら背景の一部に
+ * なる。
+ *
+ * ぼかしは背後にあるのが核だから成立する。**何が後ろに来るか分からない面
+ * では使わない**（帯で一度やって、明るい応用の上で文字が飛んだ）。
+ */
+.hud-float {
+  background: rgba(12, 14, 18, 0.72);
+  backdrop-filter: blur(18px) saturate(1.2);
+  -webkit-backdrop-filter: blur(18px) saturate(1.2);
+  box-shadow:
+    0 18px 40px -12px rgba(0, 0, 0, 0.7),
+    0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.hud-panel {
+  position: relative;
+  background: var(--hud-panel);
+  border: 1px solid var(--hud-line);
+  backdrop-filter: blur(8px);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 0 0 1px rgba(0, 0, 0, 0.4),
+    0 8px 24px -12px rgba(0, 0, 0, 0.9);
+}
+/*
+ * Corner brackets, now something a caller asks for.
+ *
+ * They used to be on every panel. Five sets of machined corners at equal
+ * weight is wallpaper: nothing is being singled out, so the marking stops
+ * meaning anything and just reads as theme. In a helmet they mark the one
+ * thing being tracked, so here they go on the one thing that matters — and
+ * on nothing else.
+ */
+.hud-bracket::before,
+.hud-bracket::after {
+  content: '';
+  position: absolute;
+  width: 10px;
+  height: 10px;
+  border-color: var(--hud-line-strong);
+  pointer-events: none;
+}
+.hud-bracket::before {
+  top: -1px; left: -1px;
+  border-top: 1px solid; border-left: 1px solid;
+}
+.hud-bracket::after {
+  bottom: -1px; right: -1px;
+  border-bottom: 1px solid; border-right: 1px solid;
+}
+
+/*
+ * Section labels.
+ *
+ * Were 10px in a muted grey, which on a near-black panel is below the point
+ * where the shape of a word is recoverable — 「文字も全体的に小さくて視認性が
+ * 低い」. 12px and a brighter grey costs nothing: these labels sit in a rail
+ * that is closed by default, so there is no density to protect.
+ */
+.hud-label {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: #93a9bf;
+}
+
+/* Reserved for the product mark and live accents — never for body text,
+   where a glow costs legibility and buys nothing. */
+.hud-glowtext {
+  color: var(--hud-accent);
+  text-shadow: 0 0 12px rgba(56, 189, 248, 0.55);
+}
+
+/*
+ * The name.
+ *
+ * It was 14px of tracked monospace sharing a 48px bar with five other
+ * controls, which is a filename rather than a mark. Whatever else is on
+ * screen, this is the thing that says what you are looking at, so it is
+ * allowed to be the largest text in the room — and it is the only text
+ * carrying the core's own gradient, which is what ties the two together.
+ */
+.hud-wordmark {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  /* The indent cancels the trailing letter-space, so the mark sits optically
+     centred against everything below it rather than a fifth of a space right. */
+  text-indent: 0.42em;
+  line-height: 1;
+  /*
+   * Cold end only. Cyan running to violet is Google's mark, not ours — the
+   * blue-to-purple sweep is the part of that palette people recognise, and
+   * echoing the core's full range landed straight on it. The core keeps its
+   * violet; the name does not.
+   */
+  background: linear-gradient(100deg, #8ceaff 0%, #5cb8ff 52%, #3d84e6 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  filter: drop-shadow(0 0 18px rgba(56, 189, 248, 0.35));
+}
+
+.hud-divider {
+  height: 1px;
+  background: linear-gradient(90deg, var(--hud-line-strong), transparent);
+}
+
+.hud-mono {
+  font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Confidence bars. Width carries the number; colour carries the band. */
+.hud-meter {
+  height: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.hud-meter > span {
+  display: block;
+  height: 100%;
+  transition: width 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+/* A live indicator that reads as "receiving", not "loading". */
+@keyframes hud-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.82); }
+}
+.hud-pulse { animation: hud-pulse 1.6s ease-in-out infinite; }
+
+@keyframes hud-sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(320%); }
+}
+.hud-sweep::after {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(56, 189, 248, 0.5), transparent);
+  animation: hud-sweep 1.9s linear infinite;
+}
+
+@keyframes hud-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.hud-rise { animation: hud-rise 260ms cubic-bezier(0.2, 0.8, 0.2, 1) both; }
+
+/* Waveform for the listening state. */
+@keyframes hud-bar {
+  0%, 100% { transform: scaleY(0.25); }
+  50% { transform: scaleY(1); }
+}
+.hud-bar {
+  width: 2px;
+  height: 14px;
+  background: var(--hud-accent);
+  transform-origin: center;
+  animation: hud-bar 900ms ease-in-out infinite;
+}
+
+/* Scrollbars, so the panels do not sprout a chunk of macOS chrome. */
+*::-webkit-scrollbar { width: 6px; height: 6px; }
+*::-webkit-scrollbar-track { background: transparent; }
+*::-webkit-scrollbar-thumb {
+  background: rgba(56, 189, 248, 0.22);
+  border-radius: 3px;
+}
+*::-webkit-scrollbar-thumb:hover { background: rgba(56, 189, 248, 0.42); }
+
+/**
+ * Motion here is ambience, not information — every animated element also
+ * states its condition in text, so removing the movement removes nothing.
+ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

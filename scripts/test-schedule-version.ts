@@ -1,0 +1,11 @@
+import { newestScheduleFile, scheduleVersion } from '../server/services/schedule_exams.js';
+let passed = 0, failed = 0;
+const eq = (n: string, a: unknown, b: unknown) => { const ok = JSON.stringify(a) === JSON.stringify(b); ok ? passed++ : failed++; console.log(`  ${ok ? '✓' : '✗'} ${n}${ok ? '' : ` (got ${JSON.stringify(a)})`}`); };
+console.log('▸ 版は数で並べる');
+eq('10 月版が 6 月版より新しい', newestScheduleFile(['exams-2026.6.19.json', 'exams-2026.10.3.json']), 'exams-2026.10.3.json');
+eq('年が違えば年が先', newestScheduleFile(['exams-2027.1.5.json', 'exams-2026.12.20.json']), 'exams-2027.1.5.json');
+eq('数字に割れない名は古い扱い', newestScheduleFile(['exams-old.json', 'exams-2026.6.19.json']), 'exams-2026.6.19.json');
+eq('空なら undefined', newestScheduleFile([]), undefined);
+eq('版の読み', scheduleVersion('exams-2026.6.19.json'), [2026, 6, 19]);
+console.log(`\nSchedule version: ${passed} passed, ${failed} failed`);
+if (failed) process.exit(1);

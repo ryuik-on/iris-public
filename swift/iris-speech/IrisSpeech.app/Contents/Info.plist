@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key><string>IrisSpeech</string>
+  <key>CFBundleIdentifier</key><string>local.iris.speech</string>
+  <key>CFBundleName</key><string>IRIS Speech</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundleVersion</key><string>1</string>
+  <key>LSMinimumSystemVersion</key><string>26.0</string>
+  <!-- An accessory rather than a background-only app: it must still be able
+       to put the system's permission prompt in front of a person. -->
+  <key>LSUIElement</key><true/>
+  <!-- Required. Without it macOS terminates the process the moment it asks
+       for the microphone, rather than showing a prompt. -->
+  <key>NSMicrophoneUsageDescription</key>
+  <string>IRIS があなたの発話を端末内で文字に変換するためにマイクを使用します。音声は外部に送信されません。</string>
+  <!-- Reading events needs full access on macOS 14+, but nothing here writes.
+       A usage string that overstates what it is for teaches people to stop
+       reading them. -->
+  <!-- Only the full-access key. The legacy NSCalendarsUsageDescription is
+       what macOS 14+ reads as a request for write-only, and shipping both
+       appears to have landed us in exactly that: writeOnly, with reading
+       refused and no prompt to widen it. -->
+  <key>NSCalendarsFullAccessUsageDescription</key>
+  <string>IRIS が今日の予定を読み取って状況を把握するために使用します。予定の作成・変更・削除は行いません。</string>
+</dict>
+</plist>

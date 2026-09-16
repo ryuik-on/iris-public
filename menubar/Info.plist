@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleName</key><string>IRIS HUD</string>
+  <key>CFBundleIdentifier</key><string>com.user.iris.hud</string>
+  <key>CFBundleExecutable</key><string>IRIS HUD</string>
+  <key>CFBundleIconFile</key><string>ApplicationIcon</string>
+  <key>CFBundleVersion</key><string>1.0</string>
+  <key>CFBundleShortVersionString</key><string>1.0</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+  <!-- 帯とダッシュボードだけ。Dock にも ⌘Tab にも出ません。 -->
+  <key>LSUIElement</key><true/>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <!--
+    次の予定までの移動時間を出すためだけに使います。位置は MapKit の経路計算に
+    渡されるだけで、IRIS はどこにも保存せず、どこにも送りません。
+  -->
+  <key>NSLocationWhenInUseUsageDescription</key><string>次の予定までの移動時間を計算するために現在地を使います。</string>
+</dict></plist>
