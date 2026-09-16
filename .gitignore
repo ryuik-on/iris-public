@@ -20,3 +20,6 @@ swift/iris-speech/.build/
 
 # 下書きの置き場。共有しない。
 .scratch/
+
+# ビルド成果物（公開版には含めない。swift/iris-speech/bundle.sh で作る）
+swift/iris-speech/IrisSpeech.app/
