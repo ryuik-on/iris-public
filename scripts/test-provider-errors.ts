@@ -129,6 +129,48 @@ async function main() {
   eq('529 is overloaded', over.kind, 'overloaded');
   check('overload is transient and retried', over.retryable && !over.configuration);
 
+  /*
+   * 混雑はベンダーごとに別の綴りで来る。529 は Anthropic の言い方で、それだけを
+   * 見ていたので Gemini の 503 は `unknown` に落ち、**失敗の引き継ぎに入らなかった**
+   * （実測 2026-09-29、既定の一番手が混んだだけで会話が終わった）。
+   */
+  const geminiBusy: any = new Error(
+    '{"error":{"code":503,"message":"This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.","status":"UNAVAILABLE"}}'
+  );
+  geminiBusy.status = 503;
+  eq('Gemini の 503 も混雑', classifyProviderError(geminiBusy).kind, 'overloaded');
+  // status が付かずに本文だけ来ることもある（包み方は呼び出し側による）。
+  eq('本文だけでも混雑と読む', classifyProviderError(new Error(geminiBusy.message)).kind, 'overloaded');
+
+  const openaiBusy: any = new Error('Service Unavailable');
+  openaiBusy.status = 503;
+  eq('OpenAI の 503 も混雑', classifyProviderError(openaiBusy).kind, 'overloaded');
+
+  const gateway: any = new Error('Bad Gateway');
+  gateway.status = 502;
+  eq('502 も混雑（手前の関門が上流に届かない）', classifyProviderError(gateway).kind, 'overloaded');
+
+  /*
+   * **504 は混雑にしない。**あれは時間切れで、router は「時間切れでは引き継がない」
+   * と決めている —— 同じ呼び出しが二度課金される恐れがあるため。
+   */
+  const gatewayTimeout: any = new Error('Gateway Timeout');
+  gatewayTimeout.status = 504;
+  eq('504 は時間切れのまま', classifyProviderError(gatewayTimeout).kind, 'timeout');
+
+  /*
+   * 500 も混雑にしない。**壊れた要求でも 500 は返る**ので、別の相手に渡しても
+   * 同じことが起きる。
+   */
+  const serverFault: any = new Error('Internal Server Error');
+  serverFault.status = 500;
+  check('500 は混雑ではない', classifyProviderError(serverFault).kind !== 'overloaded');
+
+  // 429 の方が具体的なので、混雑の判定に先を越されない。
+  const throttled: any = new Error('Too Many Requests');
+  throttled.status = 429;
+  eq('429 は今までどおり rate_limit', classifyProviderError(throttled).kind, 'rate_limit');
+
   const network = classifyProviderError(new Error('socket hang up'));
   eq('a network fault is identified', network.kind, 'network');
   check('a network fault is retried', network.retryable);

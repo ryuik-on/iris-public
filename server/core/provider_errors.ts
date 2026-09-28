@@ -144,11 +144,30 @@ export function classifyProviderError(err: any): ClassifiedProviderError {
     };
   }
 
-  if (status === 529 || /overloaded/i.test(raw + body)) {
+  /*
+   * 混雑は、ベンダーごとに別の綴りで来る。
+   *
+   * ここは長らく **529 と "overloaded" の字面だけ**を見ていた。それは Anthropic の
+   * 綴りで、Gemini は 503 に `"status":"UNAVAILABLE"` と "high demand" で言い、
+   * OpenAI も 503 を使う。**分類できなかったものは失敗の引き継ぎに入らない**
+   * （`FAILOVER_KINDS` は `unknown` を含まない）ので、既定の一番手である無料枠が
+   * 混んだだけで会話がそこで終わっていた。
+   *
+   * 実測 2026-09-29: Gemini が
+   * `{"error":{"code":503,...,"status":"UNAVAILABLE"}}` を返し、router は
+   * `unknown` として投げ直し、`FAILOVER:` は一度も出なかった。
+   *
+   * 502 も入れる（手前の関門が上流に届かない、同じ形の一時的な不通）。
+   * **504 は入れない** —— あれは時間切れで、上の規則が「時間切れでは引き継がない」
+   * と決めている（同じ呼び出しが二度課金される恐れがあるため）。500 も入れない ——
+   * 壊れた要求でも 500 は返るので、別の相手に渡しても同じことが起きる。
+   */
+  if (status === 529 || status === 503 || status === 502
+      || /overloaded|service unavailable|high demand|"status"\s*:\s*"UNAVAILABLE"/i.test(raw + body)) {
     return {
       kind: 'overloaded',
       message: 'プロバイダ側が一時的に混雑しています。',
-      guidance: '自動的に再試行されます。',
+      guidance: '自動的に再試行されます。混雑が続く場合は次のプロバイダへ切り替わります。',
       configuration: false,
       retryable: true,
       raw,

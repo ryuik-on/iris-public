@@ -233,6 +233,30 @@ async function main() {
     check('capacity trouble gets a short wait, not a daily one', retryAt - now <= 10 * 60_000);
   }
 
+  {
+    /*
+     * 529 は Anthropic の綴り。**Gemini は 503 でそれを言う。**分類できない失敗は
+     * 引き継ぎに入らないので、既定の一番手（無料枠）が混んだだけで会話が終わって
+     * いた —— 実測 2026-09-29、`FAILOVER:` が一度も出ずに turn が死んだ。
+     */
+    let now = Date.parse('2026-09-29T12:00:00Z');
+    const gemini = new FakeProvider('gemini', 'gemini', 'gemini-3.6-flash');
+    const anthropic = new FakeProvider('anthropic', 'anthropic', 'claude-opus-5');
+    const events: RouterEvent[] = [];
+    const router = new ProviderRouter(
+      [{ key: 'gemini', provider: gemini }, { key: 'anthropic', provider: anthropic }],
+      { now: () => now, onEvent: (e) => events.push(e) }
+    );
+
+    gemini.nextError = httpError(
+      503,
+      '{"error":{"code":503,"message":"This model is currently experiencing high demand.","status":"UNAVAILABLE"}}'
+    );
+    await call(router);
+    eq('Gemini の 503 でも次が答える', anthropic.calls, 1);
+    check('引き継ぎとして記録される', events.some((e) => e.type === 'router.failover' && e.kind === 'overloaded'));
+  }
+
   // -----------------------------------------------------------------------
   section('A dead chat is never the answer');
 

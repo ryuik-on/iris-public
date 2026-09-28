@@ -15,7 +15,7 @@ export function createDevelopmentTools(development: DevelopmentService): Tool[] 
     {
       name: 'create_development_task',
       description:
-        '開発タスクを作成します。目標と成功条件（Definition of Done）を明示的に記録し、後続のエージェントやレビューがこれを参照します。',
+        '利用者がタスク登録・管理を求めた場合に、開発タスクの目標と成功条件を記録します。分析・調査・実装そのものは実行しません。それらの依頼を登録で代替しないでください。',
       riskLevel: RiskLevel.WRITE,
       trust: ToolTrust.TRUSTED_CORE,
       schema: {
