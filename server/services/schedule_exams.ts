@@ -43,15 +43,32 @@ export interface ScheduleRead {
 
 const EMPTY = (reason: string): ScheduleRead => ({ exams: [], unresolved: 0, source: null, reason });
 
+export interface ScheduledItem {
+  title: string;
+  date: string;
+  period: number | null;
+  start: string | null;
+  startBasis: string | null;
+  span: number | null;
+}
+
 export interface ScheduleLectureRead {
-  lectures: Array<{
-    title: string;
-    date: string;
-    period: number | null;
-    start: string | null;
-    startBasis: string | null;
-    span: number | null;
-  }>;
+  lectures: ScheduledItem[];
+  /**
+   * 試験。**同じ紙の、同じ抽出結果から。**
+   *
+   * 長らく授業だけを突き合わせていた。試験は `readScheduleExams` が別に読み、
+   * そちらは日付と題名しか持たないので、カレンダーと時刻を比べられなかった。
+   * 結果として 2026-09-16 に「今日から年度末まで欠け0」と報告した裏で、
+   * **病理学Ⅱ各論試験（10/26 12:50）がカレンダーに無かった。**別件を測って
+   * いる途中に偶然見つかった —— 検査が見ていないものは、検査が0と言っても
+   * 0ではない。
+   *
+   * 授業と同じ形（時限・開始・コマ数つき）で出すので、突き合わせは同じ規則で
+   * 動く。再試・追試は抽出の時点で外れている（落ちなければ起きないものを
+   * 「カレンダーに無い」と言わないため）。
+   */
+  exams: ScheduledItem[];
   /**
    * 格子の検算に落ちた箇所。**件数ではなく、どこかを持ち歩く。**
    *
@@ -102,7 +119,7 @@ export function newestScheduleFile(files: string[]): string | undefined {
 export function readScheduleLectures(root: string): ScheduleLectureRead {
   const dir = join(root, '.iris', 'schedule');
   const none = (reason: string): ScheduleLectureRead => ({
-    lectures: [], gridFaults: [], source: null, reason,
+    lectures: [], exams: [], gridFaults: [], source: null, reason,
   });
   if (!existsSync(dir)) return none('講義日程の取り込みがありません。');
   let files: string[];
@@ -123,18 +140,28 @@ export function readScheduleLectures(root: string): ScheduleLectureRead {
     if (!Array.isArray(parsed?.lectures)) {
       return { ...none('この抽出結果には授業が入っていません（古い版の取り込み）。'), source };
     }
-    const lectures = parsed.lectures
-      .filter((l: any) => typeof l?.title === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(l?.date ?? ''))
-      .map((l: any) => ({
-        title: String(l.title).trim(),
-        date: l.date,
-        period: typeof l.period === 'number' ? l.period : null,
-        start: typeof l.start === 'string' ? l.start : null,
-        startBasis: typeof l.startBasis === 'string' ? l.startBasis : null,
-        span: typeof l.span === 'number' ? l.span : null,
-      }));
+    const shape = (rows: any[]): ScheduledItem[] =>
+      rows
+        .filter((l: any) => typeof l?.title === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(l?.date ?? ''))
+        .map((l: any) => ({
+          // 抽出が題名の途中で折り返すことがある（「病理学Ⅱ各論試 験★」）。
+          // 突き合わせ側が空白を落とすので、ここでは形を変えない。
+          title: String(l.title).trim(),
+          date: l.date,
+          period: typeof l.period === 'number' ? l.period : null,
+          start: typeof l.start === 'string' ? l.start : null,
+          startBasis: typeof l.startBasis === 'string' ? l.startBasis : null,
+          span: typeof l.span === 'number' ? l.span : null,
+        }));
+    const lectures = shape(parsed.lectures);
+    /*
+     * 試験の欄が無い抽出結果でも、授業の突き合わせは続ける。**片方が取れて
+     * いないことは、もう片方を止める理由にならない。**
+     */
+    const exams = Array.isArray(parsed?.exams) ? shape(parsed.exams) : [];
     return {
       lectures,
+      exams,
       gridFaults: Array.isArray(parsed?.gridFaults) ? parsed.gridFaults : [],
       source,
       reason: null,

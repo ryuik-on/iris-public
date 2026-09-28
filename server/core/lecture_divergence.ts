@@ -14,6 +14,14 @@
 
 export interface ScheduleLecture {
   title: string;
+  /**
+   * 授業か試験か。**扱いは同じ、重みは違う。**
+   *
+   * 突き合わせの規則は一つで足りる（どちらも紙の上の題名・日付・時限）。
+   * 分けて持つのは、欠けを読む人にとって意味が違うから —— 授業を一コマ
+   * 逃すのと、試験を逃すのは同じ事故ではない。
+   */
+  kind?: 'lecture' | 'exam';
   /** `yyyy-MM-dd` */
   date: string;
   period: number | null;
@@ -33,6 +41,8 @@ export interface CalendarLectureLike {
 
 export interface LectureGap {
   title: string;
+  /** 授業か試験か。読む側が重みを変えられるように。 */
+  kind: 'lecture' | 'exam';
   date: string;
   period: number | null;
   /** 日程表の時刻。 */
@@ -71,8 +81,15 @@ export interface LectureDivergence {
    * 無いものをここに出す。`shifted` として拾った側の予定は除く —— 同じものを
    * 二度言わない。
    *
-   * 再試や試験は授業ではないので、ここでは拾えない。**設計どおり拾わない
-   * ものは、拾えないと知っておく。**
+   * 試験は番号を持たないので、この規則では拾えない。**設計どおり拾わない
+   * ものは、拾えないと知っておく** —— 実際にそれで一件見落とした。暦の
+   * 2026-10-26 08:30「病理学Ⅰ各論試験」は、紙では 10/29 にあり 10/26 には
+   * 無い。欠けでも時刻違いでも日ずれでもなく、そして番号が無いので余分にも
+   * ならなかった。**検査のどの欄にも出ない予定があった。**
+   *
+   * そこで試験は別の規則で拾う（下の `surplusExam`）。授業と同じ部分一致には
+   * しない —— 「病理学Ⅰ各論試験の勉強」のような自分で入れた予定が、試験の
+   * 題名を含むだけで余分になる。
    */
   surplus: LectureGap[];
   /** 比べた日数。 */
@@ -143,8 +160,34 @@ function same(a: string, b: string): boolean {
   return x.includes(y) || y.includes(x);
 }
 
+/**
+ * 試験が同じか。**部分一致にしない。**
+ *
+ * 授業の部分一致をそのまま使うと、暦の 2026-10-29「病理学Ⅰ各論試験（再）」が
+ * 紙の 10/29「病理学Ⅰ各論試験」に当たって、食い違い無しと言う（実測
+ * 2026-09-28）。**再試は試験ではない** —— 落ちなければ起きないものが、本番の
+ * 代わりに立っていた。同じ理由で「病理学Ⅰ各論試験の勉強」も当たらない。
+ *
+ * 題名が短く区別しやすいので、試験では完全一致で足りる。折り返しの空白・
+ * 半角中点・★は `fold` が先に落とす。
+ */
+function sameExam(a: string, b: string): boolean {
+  const x = fold(a);
+  const y = fold(b);
+  return !!x && x === y;
+}
+
 export function findLectureDivergence(input: {
   lectures: ScheduleLecture[];
+  /**
+   * 試験。**授業と同じ規則で突き合わせるが、余分の判定には入れない。**
+   *
+   * 余分（暦にあって紙に無い）は科目と番号で見ている。試験の題名には番号が
+   * 無いので、そもそも判定にかからない —— 手で入れた再試を「日程表に無い」と
+   * 言わないのは、この性質に頼っている。**設計どおり拾わないものは、拾えないと
+   * 知っておく。**
+   */
+  exams?: ScheduleLecture[];
   events: CalendarLectureLike[];
   from: string;
   to: string;
@@ -203,7 +246,18 @@ export function findLectureDivergence(input: {
   const claimed = new Set<CalendarLectureLike>();
   /** その日で既に照合に使った予定。同じ題名の別のコマに二度当てない。 */
   const usedOnDay = new Set<CalendarLectureLike>();
-  for (const l of input.lectures) {
+  /*
+   * 紙の上のもの、ひとまとめ。**試験を後回しにしない。**
+   *
+   * 同じ日に授業と試験が並ぶ（10/19 は 1限から薬理学期末試験、4限から病理学Ⅰ
+   * 実習）。片方だけを先に全部照合すると、`usedOnDay` の取り合いが日付順では
+   * なく種類順になる。日付で並べて、同じ日は時限の早い順に見る。
+   */
+  const scheduled: ScheduleLecture[] = [...input.lectures.map((l) => ({ ...l, kind: l.kind ?? ('lecture' as const) })),
+    ...(input.exams ?? []).map((e) => ({ ...e, kind: 'exam' as const }))]
+    .sort((a, b) => (a.date === b.date ? (a.start ?? '').localeCompare(b.start ?? '') : a.date.localeCompare(b.date)));
+
+  for (const l of scheduled) {
     if (l.date < input.from || l.date > input.to) continue;
     const here = byDay.get(l.date) ?? [];
     /*
@@ -215,16 +269,20 @@ export function findLectureDivergence(input: {
       const at = String(e.start ?? '');
       return at.length >= 16 ? at.slice(11, 16) : null;
     };
+    /** 試験は完全一致、授業は部分一致。理由は `sameExam` に。 */
+    const alike = (paper: string, event: string) =>
+      l.kind === 'exam' ? sameExam(paper, event) : same(paper, event);
     // 同じ日の別の授業に時刻がぴったり合う予定は、代替として取らない
     // —— 先に処理された授業が、後の授業の予定を横取りしない。
     const reservedByAnother = (e: CalendarLectureLike) =>
-      input.lectures.some((o) => o !== l && o.date === l.date && !!o.start && same(o.title, e.title) && clockOf(e) === o.start);
+      scheduled.some((o) => o !== l && o.date === l.date && !!o.start && same(o.title, e.title) && clockOf(e) === o.start);
     const match =
-      here.find((e) => !usedOnDay.has(e) && same(l.title, e.title) && !!l.start && clockOf(e) === l.start) ??
-      here.find((e) => !usedOnDay.has(e) && same(l.title, e.title) && !reservedByAnother(e));
+      here.find((e) => !usedOnDay.has(e) && alike(l.title, e.title) && !!l.start && clockOf(e) === l.start) ??
+      here.find((e) => !usedOnDay.has(e) && alike(l.title, e.title) && !reservedByAnother(e));
     if (match) usedOnDay.add(match);
     const gap: LectureGap = {
       title: l.title,
+      kind: l.kind ?? 'lecture',
       date: l.date,
       period: l.period,
       scheduled: l.start,
@@ -245,7 +303,7 @@ export function findLectureDivergence(input: {
        * 報告する。**紙にも暦にも版があり、片方を正しいと決めるのは人の仕事。
        */
       const near = input.events.find((e) => {
-        if (!same(l.title, e.title)) return false;
+        if (!alike(l.title, e.title)) return false;
         const at = String(e.start ?? '').slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(at)) return false;
         const apart = Math.abs(Date.parse(`${at}T00:00:00`) - Date.parse(`${l.date}T00:00:00`)) / 86_400_000;
@@ -293,6 +351,42 @@ export function findLectureDivergence(input: {
       const at = String(e.start ?? '');
       surplus.push({
         title: e.title,
+        // 余分は番号のある授業の題名でしか成立しない。試験はここに来ない。
+        kind: 'lecture',
+        date,
+        period: null,
+        scheduled: null,
+        calendar: at.length >= 16 ? at.slice(11, 16) : null,
+        extrapolated: false,
+      });
+    }
+  }
+
+  /*
+   * 暦にあって、その日の紙に無い試験。
+   *
+   * 授業の余分と違い、**題名がそのまま一致するときだけ**言う（空白・中点・★を
+   * 落としたあとの完全一致）。部分一致にすると「病理学Ⅰ各論試験の勉強」
+   * 「病理学Ⅱ各論試験対策」のような自分の予定が、試験の題名を含むだけで
+   * 余分に見える。
+   *
+   * 注記が付いたもの（（再）（追））は人が意図して入れたものなので触らない
+   * —— 再試は落ちなければ起きないので、紙には無くて当たり前。
+   */
+  const examTitles = new Set((input.exams ?? []).map((e) => fold(e.title)));
+  for (const [date, here] of byDay) {
+    if (date < input.from || date > input.to) continue;
+    for (const e of here) {
+      if (claimed.has(e) || usedOnDay.has(e)) continue;
+      const title = fold(e.title);
+      if (!examTitles.has(title)) continue;
+      if (/[（(][^（）()]*[）)]\s*$/.test(title)) continue;
+      const scheduledHere = (input.exams ?? []).some((x) => x.date === date && fold(x.title) === title);
+      if (scheduledHere) continue;
+      const at = String(e.start ?? '');
+      surplus.push({
+        title: e.title,
+        kind: 'exam',
         date,
         period: null,
         scheduled: null,

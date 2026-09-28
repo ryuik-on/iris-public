@@ -256,6 +256,127 @@ section('同じ題名が一日に複数あっても、時刻の合うものに�
   eq('欠けたのは 12:50 の方', d.missing[0].scheduled, '12:50');
 }
 
+section('試験も突き合わせる');
+{
+  /*
+   * 実際に起きたこと（2026-09-16）。「今日から年度末まで欠け0」と報告した裏で、
+   * **病理学Ⅱ各論試験（10/26 12:50）がカレンダーに無かった。**検査が授業だけを
+   * 見ていたので、0 は「無い」ではなく「見ていない」だった。
+   *
+   * 紙の題名は抽出が途中で折り返して「病理学Ⅱ各論試 験★」になる。空白と★は
+   * 突き合わせの前に落ちる。
+   */
+  const d = findLectureDivergence({
+    from: '2026-10-19', to: '2026-10-29',
+    lectures: [{ title: '病理学Ⅰ実習41-42', date: '2026-10-19', period: 4, start: '12:50', startBasis: 'measured' }],
+    exams: [
+      { title: '薬理学期末試験★', date: '2026-10-19', period: 1, start: '08:30', startBasis: 'measured', span: 3 },
+      { title: '病理学Ⅱ各論試 験★', date: '2026-10-26', period: 4, start: '12:50', startBasis: 'measured', span: 2 },
+      { title: '病理学Ⅰ各論試 験★', date: '2026-10-29', period: 1, start: '08:30', startBasis: 'measured', span: 2 },
+    ],
+    events: [
+      { title: '薬理学期末試験', start: '2026-10-19T08:30:00+09:00' },
+      { title: '病理学Ⅰ実習41-42', start: '2026-10-19T12:50:00+09:00' },
+      { title: '病理学Ⅰ各論試験', start: '2026-10-26T08:30:00+09:00' },
+    ],
+  });
+  eq('欠けているのは病理学Ⅱ各論試験', d.missing.map((m) => m.title), ['病理学Ⅱ各論試 験★']);
+  eq('欠けは試験として印が付く', d.missing[0]?.kind, 'exam');
+  eq('コマ数も持って出る（入れ直す長さに要る）', d.missing[0]?.span, 2);
+  eq('題名が折り返していても、揃っている試験は欠けにしない', d.missing.some((m) => m.title.includes('薬理')), false);
+  /*
+   * 紙は病理学Ⅰ各論試験を 10/29 と言い、暦は 10/26 に持っている。三日離れて
+   * いるので日ずれ。**どちらが正しいかは言わない。**
+   */
+  eq('日がずれた試験は日ずれ', d.shifted.map((x) => [x.title, x.date, x.calendar]), [['病理学Ⅰ各論試 験★', '2026-10-29', '2026-10-26']]);
+  eq('日ずれを欠けとして二度言わない', d.missing.length, 1);
+  eq('暦の側の試験を「日程表に無い」と言わない', d.surplus.length, 0);
+  eq('授業は授業として印が付く', d.missing.concat(d.shifted).every((g) => g.kind === 'exam'), true);
+}
+{
+  /*
+   * 実測 2026-09-28。暦の 10/29「病理学Ⅰ各論試験（再）」が、紙の 10/29
+   * 「病理学Ⅰ各論試験」に部分一致で当たり、食い違い無しと言っていた。
+   * **再試は試験ではない。**落ちなければ起きないものが、本番の代わりに
+   * 立っていた。
+   */
+  const d = findLectureDivergence({
+    from: '2026-10-26', to: '2026-10-29',
+    lectures: [],
+    exams: [{ title: '病理学Ⅰ各論試 験★', date: '2026-10-29', period: 1, start: '08:30', startBasis: 'measured', span: 2 }],
+    events: [
+      { title: '病理学Ⅰ各論試験（再）', start: '2026-10-29T08:30:00+09:00' },
+      { title: '病理学Ⅰ各論試験', start: '2026-10-26T08:30:00+09:00' },
+    ],
+  });
+  eq('再試は本番の代わりにならない（日ずれとして出る）', d.shifted.map((x) => [x.date, x.calendar]), [['2026-10-29', '2026-10-26']]);
+  eq('注記付きの再試そのものは余分にしない', d.surplus.length, 0);
+}
+{
+  /*
+   * 暦にあって、その日の紙に無い試験。実測 2026-09-28、暦の 10/20 に
+   * 「病理学Ⅱ各論試験」があり、紙は 10/26。**六日離れているので日ずれでもなく**、
+   * 番号が無いので授業の余分にもならず、**検査のどの欄にも出なかった。**
+   */
+  const d = findLectureDivergence({
+    from: '2026-10-19', to: '2026-10-26',
+    lectures: [],
+    exams: [{ title: '病理学Ⅱ各論試 験★', date: '2026-10-26', period: 4, start: '12:50', startBasis: 'measured', span: 2 }],
+    events: [{ title: '病理学Ⅱ各論試験', start: '2026-10-20T08:30:00+09:00' }],
+  });
+  eq('紙に無い日の試験は余分', d.surplus.map((x) => [x.kind, x.date, x.calendar]), [['exam', '2026-10-20', '08:30']]);
+  eq('同時に、紙の日には欠けとして出る', d.missing.map((x) => x.date), ['2026-10-26']);
+}
+{
+  // 試験の題名を含むだけの自分の予定は、余分にしない。完全一致だけを見る。
+  const d = findLectureDivergence({
+    from: '2026-10-20', to: '2026-10-26',
+    lectures: [],
+    exams: [{ title: '病理学Ⅱ各論試験', date: '2026-10-26', period: 4, start: '12:50', startBasis: 'measured' }],
+    events: [
+      { title: '病理学Ⅱ各論試験の勉強', start: '2026-10-20T19:00:00+09:00' },
+      { title: '病理学Ⅱ各論試験', start: '2026-10-26T12:50:00+09:00' },
+    ],
+  });
+  eq('「〜の勉強」は試験ではない', d.surplus.length, 0);
+  eq('本番は揃っているので欠けない', d.missing.length, 0);
+}
+{
+  // 同じ日に授業と試験が並ぶとき、片方が相手の予定を横取りしない。
+  const d = findLectureDivergence({
+    from: '2026-10-19', to: '2026-10-19',
+    lectures: [{ title: '病理学Ⅰ実習41-42', date: '2026-10-19', period: 4, start: '12:50', startBasis: 'measured' }],
+    exams: [{ title: '薬理学期末試験★', date: '2026-10-19', period: 1, start: '08:30', startBasis: 'measured' }],
+    events: [
+      { title: '薬理学期末試験', start: '2026-10-19T08:30:00+09:00' },
+      { title: '病理学Ⅰ実習41-42', start: '2026-10-19T12:50:00+09:00' },
+    ],
+  });
+  eq('同じ日の授業と試験は、それぞれ自分の予定に当たる', [d.missing.length, d.moved.length, d.shifted.length], [0, 0, 0]);
+}
+{
+  // 試験を渡さなければ、振る舞いは前と同じ。既にある呼び出し元を壊さない。
+  const d = findLectureDivergence({
+    from: '2026-10-26', to: '2026-10-26',
+    lectures: [],
+    events: [],
+  });
+  eq('試験を渡さない呼び出しは 0 件のまま', [d.compared, d.missing.length], [true, 0]);
+}
+{
+  /*
+   * 抽出結果に試験の欄が無い版（古い道具で作ったもの）。**授業の突き合わせは
+   * 続ける。**片方が取れていないことは、もう片方を止める理由にならない。
+   */
+  const d = findLectureDivergence({
+    from: '2026-10-19', to: '2026-10-19',
+    lectures: [{ title: '病理学Ⅰ実習41-42', date: '2026-10-19', period: 4, start: '12:50', startBasis: 'measured' }],
+    exams: [],
+    events: [],
+  });
+  eq('試験が空でも授業の欠けは出る', d.missing.map((m) => [m.title, m.kind]), [['病理学Ⅰ実習41-42', 'lecture']]);
+}
+
 console.log(`\n${'─'.repeat(60)}`);
 console.log(`Lecture divergence: ${passed} passed, ${failed} failed`);
 if (failed) { console.log('\nFailures:'); for (const f of failures) console.log('  - ' + f); process.exit(1); }
