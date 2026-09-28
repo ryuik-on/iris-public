@@ -10,6 +10,10 @@ set -euo pipefail
 
 # Substituted at install time. The runner is copied outside the repository,
 # so it cannot find the repository by looking upward from itself.
+# 2026-09-08、~/Downloads から ~/Projects へ移した。~/Downloads にはリンクを
+# 残してあるので古いパスも通るが、**ここは実体を指す。**Downloads は TCC の
+# 保護領域で、下の「シェルは保護されたフォルダに cd すらできない」という
+# 回避策はそのために書かれている。実体が外に出た以上、そこを経由しない。
 IRIS_DIR="${IRIS_DIR:-@IRIS_DIR@}"
 LOG_DIR="${IRIS_LOG_DIR:-$HOME/Library/Logs/IRIS}"
 MAX_BYTES=${IRIS_LOG_MAX_BYTES:-10485760}   # 10MB
@@ -53,13 +57,19 @@ done || true
 # 落ちるより悪い。
 #
 # 起動前に、3002 を掴んでいるのが自分の古い姿なら終わらせる。判定は
-# コマンド行が `server/index.ts` を含むかどうか — **無関係のものは殺さない。**
+# コマンド行が `server/index.ts`（tsx で直に走らせる形）か
+# `dist-server/index.cjs`（束ねた形）を含むかどうか — **無関係のものは殺さない。**
+#
+# 2026-09-28 に起動を束ねる形へ変えた。**この一致を一緒に直さないと、古い姿を
+# 見つけられなくなる** —— そうなると港が空かず、起こし直しが毎回 EADDRINUSE で
+# 死ぬ。この関数はまさにそれを防ぐために書かれている。両方を見るのは、
+# 取り込みの前後で形が混ざる時間があるから。
 PORT="${PORT:-3002}"
 reclaim() {
   local pid
   for pid in $(lsof -nP -tiTCP:"$PORT" -sTCP:LISTEN 2>/dev/null); do
     case "$(ps -o command= -p "$pid" 2>/dev/null)" in
-      *server/index.ts*)
+      *server/index.ts* | *dist-server/index.cjs*)
         echo "[iris] 港 $PORT を掴んでいた古い IRIS ($pid) を終了します"
         kill -TERM "$pid" 2>/dev/null || true
         for _ in 1 2 3 4 5; do
