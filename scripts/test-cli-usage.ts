@@ -10,7 +10,7 @@
  *
  * Run: npx tsx scripts/test-cli-usage.ts
  */
-import { parseCodexLimit, withinCurrentWindow, readCodexLimit } from '../server/services/cli_usage.js';
+import { parseCodexLimit, withinCurrentWindow, readCodexLimit, CliUsageService } from '../server/services/cli_usage.js';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -350,6 +350,53 @@ function main() {
     eq('どの計器か持ち歩く', parseCodexLimit(account)?.limitId, 'codex');
     // 名前付きが後ろにあっても、口座の枠が隠れない。
     eq('名前付きを飛ばして口座の枠まで遡る', parseCodexLimit([account, named].join('\n'))?.usedPercent, 68);
+  }
+
+  // ---------------------------------------------------------------------
+  section('掃き直しを外に出せる（サーバの輪を塞がないため）');
+  {
+    /*
+     * 実測 2026-09-28。掃き直しは `setTimeout(0)` に預けられていて、頼んだ人は
+     * 待たないが**同じ輪なので他の全員が待った**（外から 100ms ごとに叩いて
+     * 最大 1.7秒 の遅れ）。読む量は 7 日ぶんの転記 197 本・4.7 GB。
+     */
+    const home = mkdtempSync(join(tmpdir(), 'iris-usage-stale-'));
+    let asked = 0;
+    let read = 0;
+    const service = new CliUsageService(
+      home,
+      () => { read++; return { usage: null, model: null, messages: 0 }; },
+      7 * 24 * 60 * 60 * 1000,
+      () => { asked++; }
+    );
+    eq('立てた時点で一度頼む（最初の人を待たせないため）', asked, 1);
+    eq('自分では掃かない', read, 0);
+
+    service.read(Date.now());
+    eq('答えが無ければ、聞かれるたびに頼む', asked, 2);
+
+    service.accept({
+      codex: null, codexReason: null, claude: null, claudeReason: null,
+      checkedAt: new Date().toISOString(),
+    });
+    service.read(Date.now());
+    eq('新しい答えがあるうちは頼まない', asked, 2);
+    eq('受け取った答えをそのまま返す', service.read().checkedAt !== undefined, true);
+
+    service.read(Date.now() + 6 * 60_000);
+    eq('5分より古くなったら頼む', asked, 3);
+
+    service.invalidate();
+    eq('取り直しを頼まれたら、その場で頼む', asked, 4);
+    eq('外に出している間、自分では一度も読まない', read, 0);
+  }
+  {
+    // 頼む先を渡さなければ、振る舞いは前と同じ（自分で掃く）。
+    const home = mkdtempSync(join(tmpdir(), 'iris-usage-self-'));
+    let read = 0;
+    const service = new CliUsageService(home, () => { read++; return { usage: null, model: null, messages: 0 }; });
+    service.invalidate();
+    eq('渡されなければ自分で掃く', service.ageMs() !== null, true);
   }
 
   console.log(`\n${'─'.repeat(60)}`);

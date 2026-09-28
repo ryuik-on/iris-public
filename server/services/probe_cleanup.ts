@@ -24,6 +24,21 @@ import { join } from 'path';
  * than removed — an unreadable file is not evidence that it is one of ours.
  */
 
+/**
+ * これより大きい転記は、開かずに飛ばす。
+ *
+ * `isProbeTranscript` は**一人ターンが一つだけ**のものしか通さない。つまり
+ * 大きい転記は定義上ありえない —— それでも中身を読むために全部を開いていた。
+ *
+ * 実測 2026-09-28、`~/.claude/projects` は 1034 本・3.98 GB（最大 309 MB）。
+ * そのうち一人ターンが一つだけのものは 162 本で、**最大 295 KB**。
+ * 1 MB で切ると読む量は 3.98 GB → 70 MB になり、本物の候補に対して 3.4 倍の
+ * 余裕が残る。
+ *
+ * これが起動時の 21.5 秒だった（見張りが `probes.sweep.boot` として記録）。
+ */
+const TOO_BIG_TO_BE_A_PROBE = 1_000_000;
+
 export interface SweepResult {
   removed: number;
   bytes: number;
@@ -58,9 +73,12 @@ export function sweepProbeTranscripts(
       if (!file.endsWith('.jsonl')) continue;
       const path = join(root, project, file);
       try {
-        if (now() - statSync(path).mtimeMs < keepMs) continue;
+        const info = statSync(path);
+        if (now() - info.mtimeMs < keepMs) continue;
+        // 大きすぎるものは開かない。開かなければ判定もしないので、**消さない。**
+        if (info.size > TOO_BIG_TO_BE_A_PROBE) continue;
         if (!isProbeTranscript(readFileSync(path, 'utf-8'), prompts)) continue;
-        const size = statSync(path).size;
+        const size = info.size;
         unlinkSync(path);
         result.removed++;
         result.bytes += size;

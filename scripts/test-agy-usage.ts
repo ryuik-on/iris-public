@@ -81,10 +81,13 @@ async function main() {
     ' 9999 /usr/bin/grep language_server\n';
   const ports = (pid: number) =>
     `COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME\nlanguage ${pid} k 12u IPv4 0x1 0t0 TCP 127.0.0.1:51190 (LISTEN)\n`;
-  eq('港と合鍵', findEndpoint(ps, ports), { port: 51190, token: 'cd125d61-c81a-4e74-b60d-d004ad0c373a' });
-  eq('動いていなければ null', findEndpoint(() => 'nothing here\n', ports), null);
-  eq('合鍵が無ければ null', findEndpoint(() => ' 1 language_server --no-token\n', ports), null);
-  eq('聴いていなければ null', findEndpoint(ps, () => 'COMMAND\n'), null);
+  // `ps` と `lsof` は待たずに走らせる（同期の子プロセスはサーバの輪を止める）。
+  eq('港と合鍵', await findEndpoint(ps, ports), { port: 51190, token: 'cd125d61-c81a-4e74-b60d-d004ad0c373a' });
+  eq('動いていなければ null', await findEndpoint(() => 'nothing here\n', ports), null);
+  eq('合鍵が無ければ null', await findEndpoint(() => ' 1 language_server --no-token\n', ports), null);
+  eq('聴いていなければ null', await findEndpoint(ps, () => 'COMMAND\n'), null);
+  // 返すのが約束でも同じに動く。
+  eq('約束を返す読み手でも同じ', await findEndpoint(async () => ps(), async (pid) => ports(pid)), { port: 51190, token: 'cd125d61-c81a-4e74-b60d-d004ad0c373a' });
 
   section('閉じているあいだは、最後の値を歳とともに');
   {

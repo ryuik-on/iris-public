@@ -250,8 +250,34 @@ export class CalendarService {
      * would have failed on a fresh checkout. A test that cannot decide how
      * many sources exist is not testing the merge.
      */
-    private cachePath: string = FDP_CALENDAR_CACHE
+    private cachePath: string = FDP_CALENDAR_CACHE,
+    /**
+     * 同じ問いへの答えを、これだけの間は使い回す。
+     *
+     * `readBest` は網の向こうを二つ叩くので一回 **約2秒**（実測 2026-09-28、
+     * `/api/calendar` を三度続けて 2.16 / 2.11 / 2.76 秒）。それを
+     * `/api/schedule`・`/api/calendar`・`/api/travel/next`・
+     * `/api/lectures/divergence`・`watch`・盤 が別々に、繰り返し呼んでいた。
+     *
+     * 30 秒。**予定は秒の単位では動かない**が、IRIS 自身が書いた直後は別なので、
+     * 書いた側が `forget()` を呼ぶ。
+     */
+    private reuseMs: number = 30_000,
+    private now: () => number = () => Date.now()
   ) {}
+
+  /** 日数ごとの、直前の答え。 */
+  private reuse = new Map<string, { at: number; value: Promise<BestCalendarReading> }>();
+
+  /**
+   * 使い回しを捨てる。**書いた側が呼ぶ。**
+   *
+   * 予定を入れた／動かした直後に古い答えを返すと、入れたものが「無い」と
+   * 報告される。読みの速さのために、書いたことを見失ってはいけない。
+   */
+  forget(): void {
+    this.reuse.clear();
+  }
 
   /**
    * Every event any source can see, merged.
@@ -292,6 +318,51 @@ export class CalendarService {
        */
       excludeCache?: boolean;
     } = {}
+  ): Promise<BestCalendarReading> {
+    /*
+     * 書く側のための読み（`excludeCache`）は使い回さない —— それは
+     * 「いまの真実」を作るための読みで、少し前の答えでは用を成さない。
+     */
+    if (!options.excludeCache) {
+      const key = String(days);
+      const held = this.reuse.get(key);
+      if (held && this.now() - held.at < this.reuseMs) return held.value;
+      /*
+       * 古くなっていても、**手元の答えを返してから裏で取り直す。**
+       *
+       * 期限だけの作りにすると、30 秒ごとに誰か一人が 2 秒待つ役に当たる
+       * （画面は 15 秒ごとに聞くので、一分に二度）。待つ人を無くすには、
+       * 古いものを渡して裏で入れ替える必要がある。
+       *
+       * 古さは隠れない —— 源ごとの `readAt` は答えの中にある。
+       */
+      const started = this.now();
+      const fetching = this.readBestUncached(days, options);
+      fetching
+        .then(() => {
+          const latest = this.reuse.get(key);
+          // 追い抜かれていたら上書きしない（**新しい答えを古いもので潰さない**）。
+          if (!latest || latest.at <= started) this.reuse.set(key, { at: started, value: fetching });
+        })
+        .catch(() => {
+          // 失敗した答えは覚えない。**一度の不通を 30 秒引き延ばさない。**
+          const latest = this.reuse.get(key);
+          if (latest?.value === fetching) this.reuse.delete(key);
+        });
+      if (held) {
+        // 待たない。取り直しは走っているが、返すのは手元のもの。
+        void fetching.catch(() => {});
+        return held.value;
+      }
+      this.reuse.set(key, { at: started, value: fetching });
+      return fetching;
+    }
+    return this.readBestUncached(days, options);
+  }
+
+  private async readBestUncached(
+    days: number,
+    options: { excludeCache?: boolean } = {}
   ): Promise<BestCalendarReading> {
     const fellBackFrom: SourceFallback[] = [];
 

@@ -572,19 +572,40 @@ export function readClaudeTokens(
  * These touch the filesystem and the UI polls every couple of seconds. A
  * minute is far shorter than either figure moves and far longer than the poll.
  */
+export type TranscriptMemo = Map<
+  string,
+  { key: string; usage: TokenUsage | null; model: string | null; messages: number }
+>;
+
 export class CliUsageService {
   private cached: CliUsage | null = null;
   private cachedAt = 0;
   private sweeping = false;
-  private memo = new Map<string, { key: string; usage: TokenUsage | null; model: string | null; messages: number }>();
 
   constructor(
     private home: string,
     private readTranscript: (path: string) => { usage: TokenUsage | null; model: string | null; messages: number },
-    private windowMs = 7 * 24 * 60 * 60 * 1000
+    private windowMs = 7 * 24 * 60 * 60 * 1000,
+    /**
+     * 古くなったときに呼ぶもの。**渡されたら、自分では掃かない。**
+     *
+     * 掃き直しは数秒かかるので、同じ輪で走らせるとサーバ全体が止まる。渡す側が
+     * 別プロセスへ出す（`scripts/cli-usage-scan.ts`）。渡されなければ従来どおり
+     * 自分で掃く —— 試験と、掃く側の子プロセス自身がその道を使う。
+     */
+    private onStale?: () => void,
+    /**
+     * ファイルごとの記憶（mtime と大きさが鍵）。
+     *
+     * 外から渡せるようにしてあるのは、**別プロセスで掃くと毎回空から始まる**
+     * から。空だと 7 日ぶん 4.7 GB を読み直して 5〜7 秒（実測 2026-09-28）。
+     * 渡された地図は掃いたあとに書き込まれているので、呼んだ側が保存できる。
+     */
+    private memo: TranscriptMemo = new Map()
   ) {
     // Warmed at startup so the first person to ask is not the one who waits.
-    setTimeout(() => this.sweep(), 0).unref?.();
+    if (this.onStale) this.onStale();
+    else setTimeout(() => this.sweep(), 0).unref?.();
   }
 
   /**
@@ -601,7 +622,8 @@ export class CliUsageService {
    */
   read(now = Date.now()): CliUsage {
     if (!this.cached || now - this.cachedAt >= REFRESH_MS) {
-      setTimeout(() => this.sweep(), 0).unref?.();
+      if (this.onStale) this.onStale();
+      else setTimeout(() => this.sweep(), 0).unref?.();
     }
     return (
       this.cached ?? {
@@ -615,6 +637,34 @@ export class CliUsageService {
   }
 
   /**
+   * いま掃いて、結果を返す。**別プロセスから呼ぶための口。**
+   *
+   * `read()` は掃き直しを `setTimeout(0)` に預けていた。頼んだ人は待たないが、
+   * 同じ一本の輪なので**他の全員が待つ** —— 実測 2026-09-28、外から 100ms ごとに
+   * 叩いて最大 1.7秒 の遅れが二度出た。そこで掃く場所を別プロセスへ移した
+   * （`scripts/cli-usage-scan.ts`）。数え方は変えない。
+   */
+  sweepNow(now = Date.now()): CliUsage {
+    this.sweep(now);
+    return this.cached ?? {
+      codex: null, codexReason: '掃き直しに失敗しました。',
+      claude: null, claudeReason: '掃き直しに失敗しました。',
+      checkedAt: new Date(now).toISOString(),
+    };
+  }
+
+  /** 別プロセスが掃いた結果を、そのまま受け取る。 */
+  accept(value: CliUsage, now = Date.now()): void {
+    this.cached = value;
+    this.cachedAt = now;
+  }
+
+  /** いまの答えの古さ。取り直しを頼むかどうかの判断に使う。 */
+  ageMs(now = Date.now()): number | null {
+    return this.cached ? now - this.cachedAt : null;
+  }
+
+  /**
    * 次に聞かれたときに取り直させる。
    *
    * 掃き直しそのものはここでは待たない — 呼び出し側が `read()` を続けて呼ぶと
@@ -623,7 +673,13 @@ export class CliUsageService {
    */
   invalidate(): void {
     this.cachedAt = 0;
-    this.sweep();
+    if (this.onStale) this.onStale();
+    else this.sweep();
+  }
+
+  /** 掃いたあとのファイルごとの記憶。呼んだ側が保存できるように。 */
+  memoEntries(): Array<[string, { key: string; usage: TokenUsage | null; model: string | null; messages: number }]> {
+    return [...this.memo];
   }
 
   private sweep(now = Date.now()): void {

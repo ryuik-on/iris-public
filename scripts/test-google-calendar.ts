@@ -408,6 +408,104 @@ async function main() {
     check('and every attempt is listed', (raised?.fellBackFrom ?? []).length >= 2);
   }
 
+  // -----------------------------------------------------------------------
+  // 同じ問いを使い回す。**書いたら捨てる。**
+  //
+  // 一回の `readBest` は網の向こうを叩くので約2秒（実測 2026-09-28、
+  // `/api/calendar` 三連続で 2.16 / 2.11 / 2.76 秒）。それを六つの口が別々に
+  // 繰り返し呼んでいた。使い回しは効くが、**書いた直後に古い答えを返すと、
+  // 入れたものが「無い」と報告される** —— そこが確かめたいところ。
+  {
+    let reads = 0;
+    let at = 1_000_000;
+    const counting = {
+      configured: () => true,
+      read: async () => {
+        reads++;
+        return {
+          source: 'google' as const, events: [], days: 14, elapsedMs: 1,
+          calendarsVisible: 1, calendarNames: ['個人'], readAt: new Date(at).toISOString(),
+        };
+      },
+    };
+    const service = new CalendarService(
+      () => { throw new Error('no binary'); },
+      [{ name: 'google', source: counting }],
+      join(dir, 'absent.json'),
+      30_000,
+      () => at
+    );
+    await service.readBest(14);
+    await service.readBest(14);
+    await service.readBest(14);
+    eq('同じ日数の続けての問いは、一度しか網を叩かない', reads, 1);
+
+    await service.readBest(2);
+    eq('日数が違えば別の問い', reads, 2);
+
+    at += 31_000;
+    await service.readBest(14);
+    eq('30秒を過ぎたら取り直す', reads, 3);
+    // 待たずに古いものが返る。**30秒ごとに誰かが待つ役に当たらないため。**
+    await new Promise((r) => setTimeout(r, 0));
+    at += 31_000;
+    const before = reads;
+    await service.readBest(14);
+    eq('古くなっても、返るのは手元の答え（裏で取り直す）', reads, before + 1);
+
+    /*
+     * 書いたあとは、手元の答えを**捨てる**（古いものを返さない）。入れた予定が
+     * 「無い」と報告されるのを防ぐのはここ。
+     */
+    await new Promise((r) => setTimeout(r, 0));
+    const beforeForget = reads;
+    service.forget();
+    await service.readBest(14);
+    eq('書いたあと（forget）は取り直して、待って返す', reads, beforeForget + 1);
+
+    // 書く側のための読みは、使い回しを使わないし、使い回しにも入れない。
+    // 別の器で確かめる —— 同じ器では、直前の答えがまだ新しくて判別できない。
+    let fresh = 0;
+    const writerService = new CalendarService(
+      () => { throw new Error('no binary'); },
+      [{ name: 'google', source: { configured: () => true, read: async () => { fresh++; return {
+        source: 'google' as const, events: [], days: 14, elapsedMs: 1,
+        calendarsVisible: 1, calendarNames: ['個人'], readAt: new Date(at).toISOString(),
+      }; } } }],
+      join(dir, 'absent.json'),
+      30_000,
+      () => at
+    );
+    await writerService.readBest(14, { excludeCache: true });
+    await writerService.readBest(14, { excludeCache: true });
+    eq('書く側のための読みは、毎回網を叩く', fresh, 2);
+    await writerService.readBest(14);
+    eq('その読みは使い回しにも入らない', fresh, 3);
+  }
+  {
+    // 失敗した答えは覚えない。**一度の不通を30秒引き延ばさない。**
+    let attempts = 0;
+    let at = 2_000_000;
+    const flaky = {
+      configured: () => true,
+      read: async () => {
+        attempts++;
+        throw new CalendarUnavailableError('unreachable', 'network');
+      },
+    };
+    const service = new CalendarService(
+      () => { throw new Error('no binary'); },
+      [{ name: 'google', source: flaky }],
+      join(dir, 'absent.json'),
+      30_000,
+      () => at
+    );
+    for (const _ of [1, 2]) {
+      try { await service.readBest(14); } catch { /* 両方とも失敗する */ }
+    }
+    check('失敗は覚えないので、次の問いはまた試す', attempts === 2, `attempts=${attempts}`);
+  }
+
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Google calendar: ${passed} passed, ${failed} failed`);
   rmSync(dir, { recursive: true, force: true });

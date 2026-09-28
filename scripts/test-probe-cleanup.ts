@@ -90,6 +90,30 @@ function main() {
     eq('unparseable lines are ignored, not matched', isProbeTranscript('{oops\n' + user(PROBE), PROMPTS), true);
   }
 
+  section('Big files are skipped without being opened');
+  {
+    /*
+     * 起動時の 21.5 秒はこれだった（実測 2026-09-28、見張りが
+     * `probes.sweep.boot` として記録）。判定は**一人ターンが一つだけ**のものしか
+     * 通さないので、大きい転記は定義上ありえないのに、確かめるために全部を
+     * 開いていた —— 1034本・3.98 GB、最大 309 MB。
+     *
+     * 実測した本物の候補は最大 295 KB なので、1 MB で切る。
+     */
+    const padding = 'x'.repeat(1_200_000);
+    const dir = home({
+      // 探査の形をしているが、大きすぎる。**開かないので消さない。**
+      'huge.jsonl': { body: [user(PROBE), assistant(), `{"type":"padding","text":"${padding}"}`].join('\n'), ageHours: 200 },
+      // 小さい本物は今までどおり消える。
+      'small.jsonl': { body: [user(PROBE), assistant()].join('\n'), ageHours: 200 },
+    });
+    const result = sweepProbeTranscripts(dir, PROMPTS);
+    const project = join(dir, '.claude', 'projects', 'demo');
+    eq('大きすぎるものは残る', existsSync(join(project, 'huge.jsonl')), true);
+    eq('小さい探査は消える', existsSync(join(project, 'small.jsonl')), false);
+    eq('数えるのは消したものだけ', result.removed, 1);
+  }
+
   console.log('\n' + '─'.repeat(60));
   console.log(`Probe cleanup: ${passed} passed, ${failed} failed`);
   if (failed) {

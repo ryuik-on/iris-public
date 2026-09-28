@@ -26,6 +26,7 @@ import { parseDate, daysBetween } from '../core/daily_focus.js';
 import { settingsFromRows, DEFAULT_SETTINGS, verdictFor, type VerdictSettings } from '../core/fdp_verdict.js';
 import type { Hold } from './fdp_holds_sqlite.js';
 import { asSheetRow, type FdpLedgerStore } from './fdp_ledger_sqlite.js';
+import { FreshEnough } from '../core/fresh_enough.js';
 
 export interface FdpTask {
   id: string;
@@ -181,6 +182,22 @@ export class FdpTasksService {
   ) {}
 
   /**
+   * 設定タブは、毎回取りに行かない。
+   *
+   * 上のコメントが既に理由を書いている ——「configuration the person edits,
+   * not ledger rows that sessions write, so there is no reason for them to
+   * move」。**動かないと分かっているものを、要求のたびに網越しに取っていた。**
+   * 台帳が手元にあるときは他に網を使わないので、この一本が丸ごと待ち時間だった
+   * （実測 2026-09-28、`GET /api/fdp/tasks` が 5〜6.8秒）。
+   */
+  private settingsCache = new FreshEnough<VerdictSettings>(5 * 60_000, async () => {
+    const config = await this.sheets.fetchTab('設定', '設定項目');
+    // 読めなかったときは既定へ。**読めなかったことを設定として覚えない。**
+    if (!config.ok) throw new Error('設定タブを読めません');
+    return settingsFromRows(config.rows);
+  });
+
+  /**
    * `today` fixes both the day arithmetic and `readAt`, and it is fixed here,
    * on the server.
    *
@@ -194,8 +211,12 @@ export class FdpTasksService {
     // the person edits, not ledger rows that sessions write, so there is no
     // reason for them to move. Unreadable falls back rather than failing the
     // whole read.
-    const config = await this.sheets.fetchTab('設定', '設定項目');
-    const settings = config.ok ? settingsFromRows(config.rows) : DEFAULT_SETTINGS;
+    let settings: VerdictSettings;
+    try {
+      settings = await this.settingsCache.get();
+    } catch {
+      settings = DEFAULT_SETTINGS;
+    }
 
     // Once imported, the ledger answers from here and the network is not
     // touched for it at all — which is the point of the move.

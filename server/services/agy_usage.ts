@@ -1,4 +1,4 @@
-import { execFileSync } from 'child_process';
+import { execFile } from 'child_process';
 import { request } from 'https';
 
 /**
@@ -86,14 +86,31 @@ export interface AgyEndpoint {
  * 合鍵はコマンドラインに載っている。行儀の良い置き場所ではないが、こちらが
  * 決めたことではない。見つからなければ `null` — **推測しない。**
  */
-export function findEndpoint(
-  ps: () => string = () => execFileSync('ps', ['-eo', 'pid,command'], { encoding: 'utf8' }),
-  ports: (pid: number) => string = (pid) =>
-    execFileSync('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)], { encoding: 'utf8' })
-): AgyEndpoint | null {
+/**
+ * 待たずに走らせる。**同期の子プロセスをサーバの輪で回さない。**
+ *
+ * `read()` から `ps` と `lsof` を `execFileSync` で呼んでいた。普段は数十 ms
+ * だが、機械が混んでいるときは伸びる —— 実測 2026-09-28、`/api/usage/cli` が
+ * **2.57秒** サーバ全体を止めた（見張りがその名で記録）。これで三度目の
+ * 同じ形（セッション走査・使用量の掃き直し・ここ）。
+ */
+function run(command: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(command, args, { encoding: 'utf8', timeout: 10_000, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      if (err) return reject(err);
+      resolve(stdout);
+    });
+  });
+}
+
+export async function findEndpoint(
+  ps: () => string | Promise<string> = () => run('ps', ['-eo', 'pid,command']),
+  ports: (pid: number) => string | Promise<string> = (pid) =>
+    run('lsof', ['-nP', '-iTCP', '-sTCP:LISTEN', '-a', '-p', String(pid)])
+): Promise<AgyEndpoint | null> {
   let table: string;
   try {
-    table = ps();
+    table = await ps();
   } catch {
     return null;
   }
@@ -108,7 +125,7 @@ export function findEndpoint(
 
   let listening: string;
   try {
-    listening = ports(pid);
+    listening = await ports(pid);
   } catch {
     return null;
   }
@@ -216,7 +233,7 @@ export class AgyUsageService {
   }
 
   constructor(
-    private locate: () => AgyEndpoint | null = findEndpoint,
+    private locate: () => AgyEndpoint | null | Promise<AgyEndpoint | null> = findEndpoint,
     private fetch: (e: AgyEndpoint) => Promise<AgyQuota | null> = fetchQuota
   ) {}
 
@@ -241,7 +258,7 @@ export class AgyUsageService {
     if (this.reading) return;
     this.reading = true;
     try {
-      const endpoint = this.locate();
+      const endpoint = await this.locate();
       if (!endpoint) {
         this.cached = this.fallback('Antigravity が起動していません。', now);
         this.cachedAt = now;
