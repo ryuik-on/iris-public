@@ -146,15 +146,89 @@ section('記録に無い失敗は止めない');
   eq('その記録が無いものは止めない', hits.length, 0);
 }
 
+section('テストが通ったことを正しさと読む場面を、行いに変わる瞬間に掴む');
+{
+  /*
+   * 判断そのものは命令の綴りに現れない。掴めるのは**判断が行いに変わる瞬間** ——
+   * 記録された場所（音声・カレンダー・権限）を変えて、実機を一度も動かさずに
+   * コミットするところ。記録の learned が「実機で回す」であって「テストを増やす」
+   * ではないのが根拠。
+   */
+  const hits = guardAgainstRepeats(
+    {
+      command: 'git commit -m "barge-in fixed"',
+      changedPaths: ['server/core/barge_in.ts', 'scripts/test-barge-in.ts'],
+      realRunSeen: false,
+    },
+    RECORDED
+  );
+  eq('実機を動かしていなければ止まる', hits.map((h) => h.attempt), ['ユニットテストが通ったことをもって実装が正しいと判断する']);
+  eq('どのファイルが理由かを言う', hits[0]?.found.includes('server/core/barge_in.ts'), true);
+  eq('実機で回せと言う', hits[0]?.learned.includes('実機で回す'), true);
+}
+{
+  const hits = guardAgainstRepeats(
+    {
+      command: 'git commit -m "barge-in fixed"',
+      changedPaths: ['server/core/barge_in.ts'],
+      realRunSeen: true,
+    },
+    RECORDED
+  );
+  eq('実機を動かしていれば止めない', hits.length, 0);
+}
+{
+  /*
+   * **分からないときは止めない。**止める権限は記録と証拠から来ていて、証拠の
+   * 欠落から来ていない。
+   */
+  const hits = guardAgainstRepeats(
+    { command: 'git commit -m "x"', changedPaths: ['server/core/barge_in.ts'] },
+    RECORDED
+  );
+  eq('実機を動かしたか分からなければ止めない', hits.length, 0);
+}
+{
+  const hits = guardAgainstRepeats(
+    {
+      command: 'git commit -m "docs"',
+      changedPaths: ['README.md', 'server/core/fdp_workplace.ts'],
+      realRunSeen: false,
+    },
+    RECORDED
+  );
+  eq('実機でしか分からない場所を触っていなければ止めない', hits.length, 0);
+}
+{
+  // 盤（Swift）は画面に出るものなので、画面でしか確かめられない。
+  const hits = guardAgainstRepeats(
+    { command: 'git push origin HEAD', changedPaths: ['menubar/Rail.swift'], realRunSeen: false },
+    RECORDED
+  );
+  eq('push も同じ扱い', hits.length, 1);
+}
+{
+  // コミットでない命令では、この記録は鳴らない。
+  const hits = guardAgainstRepeats(
+    { command: 'npm run typecheck', changedPaths: ['menubar/Rail.swift'], realRunSeen: false },
+    RECORDED
+  );
+  eq('コミットしないうちは鳴らない', hits.length, 0);
+}
+{
+  // 記録が無ければ、証拠が揃っていても止めない。
+  const hits = guardAgainstRepeats(
+    { command: 'git commit -m "x"', changedPaths: ['server/core/barge_in.ts'], realRunSeen: false },
+    [RECORDED[0]]
+  );
+  eq('この記録が無ければ止めない', hits.length, 0);
+}
+
 section('覆えていない記録を隠さない');
 {
   const c = coverage(RECORDED);
-  eq('止められるのは2件', c.covered.length, 2);
-  eq(
-    '止められないのは判断についての1件',
-    c.uncovered,
-    ['ユニットテストが通ったことをもって実装が正しいと判断する']
-  );
+  eq('記録されている3件すべてに述語がある', c.covered.length, 3);
+  eq('覆えていない記録は無い', c.uncovered, []);
   eq('文言が合っているので、迷子の述語は無い', c.orphanDetectors, []);
 }
 {
@@ -166,7 +240,7 @@ section('覆えていない記録を隠さない');
     { attempt: 'コマンドをセミコロンで繋ぐ', learned: '&& で繋ぐ。', observations: 3 },
   ];
   const c = coverage(renamed);
-  eq('文言を書き直すと、述語が迷子として出る', c.orphanDetectors.length, 2);
+  eq('文言を書き直すと、述語が迷子として出る', c.orphanDetectors.length, 3);
   eq('その記録は覆えていない側に入る', c.uncovered, ['コマンドをセミコロンで繋ぐ']);
 }
 

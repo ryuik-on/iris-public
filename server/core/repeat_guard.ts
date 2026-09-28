@@ -24,6 +24,20 @@
 export interface PlannedAction {
   /** これから走らせるシェルの文字列。 */
   command?: string;
+  /**
+   * この命令に乗る変更（hook が git から取る）。
+   *
+   * 命令の文字列だけでは足りない記録があるので足した。「テストが通ったから
+   * 正しい」は命令の綴りに現れず、**何を変えたか**と**確かめたか**にしか現れない。
+   */
+  changedPaths?: string[];
+  /**
+   * このセッションで実機を動かした形跡があるか。
+   *
+   * `undefined` は「**分からない**」で、`false` ではない。分からないときは
+   * 止めない —— 止める権限は記録と証拠から来ていて、証拠の欠落から来ていない。
+   */
+  realRunSeen?: boolean;
 }
 
 /** 照合に使う、記録された試みの最小の形。 */
@@ -125,7 +139,53 @@ const DETECTORS: Detector[] = [
       return `npm test の出力を ${m[1]} に渡しています`;
     },
   },
+  {
+    attempt: 'ユニットテストが通ったことをもって実装が正しいと判断する',
+    /*
+     * これは命令の綴りに現れない失敗で、しばらく「覚えているが止められない」側に
+     * 置いてあった。判断そのものは掴めないが、**判断が行いに変わる瞬間**は掴める
+     * —— 記録された場所（音声・カレンダー・権限）を変えて、実機を一度も動かさずに
+     * コミットするところ。
+     *
+     * 記録の `learned` が「実機で回す」であって「テストを増やす」ではないのが根拠。
+     * エコー判定・カレンダーの網羅・TCC の帰属は、いずれも実機で初めて壊れた。
+     *
+     * 三つの証拠が揃ったときだけ言う。揃わないうちに言うと、根拠のない禁止になる。
+     */
+    find(action) {
+      const command = withoutQuoted(action.command ?? '');
+      if (!/\bgit\s+(commit|push)\b/.test(command)) return null;
+      // 分からない（undefined）ときは止めない。false のときだけ。
+      if (action.realRunSeen !== false) return null;
+      const risky = (action.changedPaths ?? []).filter(onlyRealMachineProves);
+      if (!risky.length) return null;
+      const shown = risky.slice(0, 3).join('、');
+      const rest = risky.length > 3 ? ` ほか${risky.length - 3}件` : '';
+      return `${shown}${rest} を変えていて、このセッションで実機を動かした形跡がありません`;
+    },
+  },
 ];
+
+/**
+ * 実機でしか壊れ方が分からない場所。
+ *
+ * 記録の `situation`（音声・カレンダー・権限まわりの実装）を、実際にあるファイルに
+ * 割り当てたもの。**思いつきで広げない** —— ここに足すなら、その場所で実機で
+ * 初めて壊れた記録があるときだけ。
+ */
+function onlyRealMachineProves(path: string): boolean {
+  return (
+    // 音声。エコー判定は自分の声で発火した
+    /^server\/(services\/(speech_agent|speech_bridge|speech_text|tts|voice_loop)|core\/(barge_in|wake_word))\.ts$/.test(path) ||
+    /^swift\/iris-speech\//.test(path) ||
+    // カレンダー。Google だけでは4件見えていなかった
+    /^server\/(services\/(calendar|google_calendar|caldav_calendar)|core\/(calendar_divergence|lecture_divergence|lecture_events))\.ts$/.test(path) ||
+    // 権限。launchd 下で notDetermined になった
+    /^server\/(core\/(local_permissions|access|privacy)|services\/(google_oauth|oauth_provider|oauth_store|grant_health))\.ts$/.test(path) ||
+    // 盤と HUD。画面に出るものは画面でしか確かめられない
+    /^menubar\/.+\.swift$/.test(path)
+  );
+}
 
 /**
  * これからやろうとしていることが、記録された失敗と同じ形か。
