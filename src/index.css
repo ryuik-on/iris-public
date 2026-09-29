@@ -123,7 +123,13 @@ html, body, #root { height: 100%; }
     margin: 190px 20px calc(136px + var(--iris-composer-extra, 0px) + var(--iris-status-height, 0px));
     box-shadow: 0 8px 28px rgba(52,78,90,0.04);
   }
-  [data-theme='mist'] .iris-reading-active { background: #f8fafb; }
+  [data-theme='mist'] .iris-reading-active {
+    /* The reading surface is a place for the reply, not a second window. */
+    background: transparent;
+    border-radius: 0;
+    margin-top: 220px;
+    box-shadow: none;
+  }
   .hud-field:has(.iris-reading-active) .hud-visor {
     align-items: flex-start;
   }
@@ -148,6 +154,9 @@ html, body, #root { height: 100%; }
 @media (max-width: 639px) {
   .iris-reading-active {
     margin: 160px 12px calc(136px + var(--iris-composer-extra, 0px) + var(--iris-status-height, 0px));
+  }
+  [data-theme='mist'] .iris-reading-active {
+    margin-top: 188px;
   }
   .hud-field:has(.iris-reading-active) .iris-nebula { width: 156px !important; height: 156px !important; }
 }
