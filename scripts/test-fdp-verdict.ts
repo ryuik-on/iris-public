@@ -7,7 +7,7 @@
  *
  * Run: npm run test:fdp-verdict
  */
-import { verdictFor, settingsFromRows, parseDays, DEFAULT_SETTINGS } from '../server/core/fdp_verdict.js';
+import { verdictFor, settingsFromRows, parseDays, DEFAULT_SETTINGS, pressingTasks, describePressing } from '../server/core/fdp_verdict.js';
 
 let passed = 0, failed = 0;
 const failures: string[] = [];
@@ -155,6 +155,40 @@ eq('開始が先なら、状態が進行中でも順調',
   verdictFor(row({ 状態: '進行中', 開始予定日: '2026/11/03', 最終更新日: '2026/01/01' }), TODAY, DEFAULT_SETTINGS), '順調');
 eq('開始日が読めなければ、始まっていない扱い',
   verdictFor(row({ 開始予定日: '', 最終更新日: '2026/01/01' }), TODAY, DEFAULT_SETTINGS), '順調');
+
+/*
+ * いま言うべき課題。監視は「期限まであと1日」だけを見ていたので、**前日に一度
+ * 言って、そのあとは何も言わなかった。**実測 2026-09-30、当日の課題と 13 日
+ * 超過の課題が、どちらも一度も鳴っていない。台帳は同じものを 期限間近・遅延 と
+ * 判定していた。
+ */
+{
+  const tasks = [
+    { id: 'T005', title: '研究室の下調べ', verdict: '期限間近', status: '未着手', dueInDays: 0 },
+    { id: 'T011', title: 'GCI', verdict: '遅延', status: '進行中', dueInDays: -13 },
+    { id: 'T006', title: 'ML', verdict: '更新停止', status: '進行中', dueInDays: 47 },
+    { id: 'T008', title: '生物統計', verdict: '順調', status: '未着手', dueInDays: 77 },
+    { id: 'T099', title: '済んだもの', verdict: '遅延', status: '完了', dueInDays: -30 },
+    { id: 'T098', title: '止めたもの', verdict: '保留', status: '保留', dueInDays: -5 },
+  ];
+  const picked = pressingTasks(tasks).map((t) => t.id);
+  eq('今日が期限のものを拾う', picked.includes('T005'), true);
+  eq('期限を過ぎたものも拾う', picked.includes('T011'), true);
+  eq('更新停止は期限の話ではないので拾わない', picked.includes('T006'), false);
+  eq('順調は拾わない', picked.includes('T008'), false);
+  // 終わった仕事は、締切を過ぎていても急かさない。
+  eq('完了は拾わない', picked.includes('T099'), false);
+  // 手を止めると決めたものを急かすのは、決めたことを忘れたふりをすること。
+  eq('保留は拾わない', picked.includes('T098'), false);
+  eq('拾ったのは二件', picked.length, 2);
+}
+{
+  // 件数では動けない。名前と、あと何日かを言う。
+  eq('超過は超過と言う', describePressing({ id: 'T011', title: 'GCI', verdict: '遅延', dueInDays: -13 }), 'T011 GCI（遅延・13日超過）');
+  eq('当日は今日と言う', describePressing({ id: 'T005', title: '研究室の下調べ', verdict: '期限間近', dueInDays: 0 }), 'T005 研究室の下調べ（期限間近・今日）');
+  eq('先の期限は残り日数', describePressing({ id: 'T007', title: '論文', verdict: '期限間近', dueInDays: 3 }), 'T007 論文（期限間近・あと3日）');
+  eq('日数が読めなければ、日数を言わない', describePressing({ id: 'T009', title: '手続き', verdict: '遅延', dueInDays: null }), 'T009 手続き（遅延）');
+}
 
 console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
 if (failed > 0) { console.log(failures.map((f) => `  - ${f}`).join('\n')); process.exit(1); }

@@ -163,3 +163,45 @@ export function verdictFor(
 
   return '順調';
 }
+
+/** 期限で急いでいる課題を選ぶための、最小の形。 */
+export interface DatedTask {
+  id?: string;
+  title?: string;
+  status?: string;
+  verdict?: Verdict | string;
+  /** 期限まで何日か。過ぎていれば負、当日は 0。 */
+  dueInDays?: number | null;
+}
+
+/**
+ * いま言うべき課題。
+ *
+ * 監視は長いあいだ「期限まであと1日」だけを見ていた。**前日に一度言って、
+ * そのあとは何も言わない** —— 今日が期限（0日）も、過ぎた期限（負）も条件から
+ * 外れる。実測 2026-09-30、当日の課題と 13 日超過の課題が、どちらも一度も
+ * 鳴っていなかった。
+ *
+ * だから日数を数え直さない。**台帳が既に出している判定を読む** —— 閾値は
+ * 設定タブにあり、二箇所で別々に決めると片方だけ古くなる。
+ *
+ * `保留` は外す。**手を止めると決めたものを急かさない** —— 決めたことを
+ * 忘れたふりをするのは、黙っているより悪い。
+ */
+export function pressingTasks<T extends DatedTask>(tasks: T[]): T[] {
+  return tasks.filter(
+    (t) => (t?.verdict === '遅延' || t?.verdict === '期限間近') && t?.status !== '完了'
+  );
+}
+
+/**
+ * 一行で読める形にする。
+ *
+ * **件数では動けない。**「1件」と言われて何をすればいいかは分からない。
+ * 名前と、あと何日かを言う（試験の食い違いで同じことを学んだ）。
+ */
+export function describePressing(task: DatedTask): string {
+  const days = typeof task.dueInDays === 'number' ? task.dueInDays : null;
+  const when = days === null ? '' : days < 0 ? `${-days}日超過` : days === 0 ? '今日' : `あと${days}日`;
+  return `${task.id ?? ''} ${task.title ?? ''}（${task.verdict}${when ? '・' + when : ''}）`.trim();
+}

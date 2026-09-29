@@ -30,6 +30,10 @@ import { sweepProbeTranscripts } from './services/probe_cleanup.js';
 import { LockStore } from './services/locks.js';
 import { readScheduleExams, readScheduleLectures, alreadyKnown } from './services/schedule_exams.js';
 import { findLectureDivergence } from './core/lecture_divergence.js';
+import { guardAgainstRepeats, coverage, explainHits } from './core/repeat_guard.js';
+import { LoopWatch } from './core/loop_watch.js';
+import { FreshEnough } from './core/fresh_enough.js';
+import { PerformanceObserver, performance } from 'node:perf_hooks';
 import { toLectureEvents } from './core/lecture_events.js';
 import { subject } from './services/event_title.js';
 import { freeForDay, sliceByDay, asPlainText } from './services/free_time.js';
@@ -41,7 +45,7 @@ import { startRepoBackup, repoBackupReading, backUpRepository } from './services
 import { DelegatedRunStore } from './services/delegated_runs.js';
 import { ProactiveRuleStore } from './services/proactive_rules_sqlite.js';
 import { nextExam, looksLikeExam } from './services/exam.js';
-import { readSessionUsage } from './services/session_usage.js';
+import { type SessionUsageRead } from './services/session_usage.js';
 import { buildPrompt, tidyTitle } from './services/conversation_title.js';
 import { AllowanceHistory } from './services/allowance_history.js';
 import {
@@ -135,6 +139,8 @@ import { createLifeStateTools } from './tools/life_state.js';
 import { DecisionStore } from './services/decisions_sqlite.js';
 import { ExperienceStore } from './services/experiences_sqlite.js';
 import { shouldBargeIn } from './core/barge_in.js';
+import { isOwnVoice } from './core/own_voice.js';
+import { pressingTasks, describePressing } from './core/fdp_verdict.js';
 import { auditPronunciation, describeAudit, PronunciationAudit } from './core/pronunciation_audit.js';
 import {
   DeviceTtsEngine, OpenAiTtsEngine, ElevenLabsTtsEngine, GoogleTtsEngine, TtsService,
@@ -165,6 +171,27 @@ const activityLog = new SqliteActivityLogStore(db);
 const accessToken = loadAccessToken(
   path.join(os.homedir(), 'Library/Application Support/IRIS/access-token')
 );
+
+/*
+ * 要求が輪を握っている間は、その道の名前で名乗る。
+ *
+ * 周期の仕事だけに名前を付けても、停止の半分は「不明」のまま残った（実測
+ * 2026-09-28）。**止めるのは周期の仕事に限らない** —— 要求の処理そのものが
+ * 同期で重ければ、同じだけ全員を待たせる。
+ */
+app.use((req, res, next) => {
+  /*
+   * 要求の**始まりから終わりまで**を計る。
+   *
+   * 最初は `next()` を囲んだだけで、それでは足りなかった —— 非同期の処理は
+   * `next()` が返ったあとに走るので、4.2秒 の停止が「不明」として残った
+   * （実測 2026-09-28）。`finish` まで開けておけば、時間を使った道は分かる。
+   */
+  const end = loopWatch.begin(`http ${req.method} ${req.path}`);
+  res.on('finish', end);
+  res.on('close', end);
+  next();
+});
 
 app.use('/api', (req, res, next) => {
   const verdict = decideAccess({
@@ -390,7 +417,7 @@ async function verifyConfiguredModels(reason: string) {
 
 // Not awaited: a slow provider must not delay the first message.
 void verifyConfiguredModels('startup');
-setInterval(() => void verifyConfiguredModels('interval'), MODEL_CHECK_INTERVAL_MS).unref();
+setInterval(() => void loopWatch.around('models.verify', () => verifyConfiguredModels('interval')), MODEL_CHECK_INTERVAL_MS).unref();
 
 // Configuration is checked before any request is made, so a placeholder key or
 // a retired model id is reported at startup rather than as an opaque runtime
@@ -484,10 +511,132 @@ const history = new AllowanceHistory(db);
  */
 const agyUsage = new AgyUsageService();
 
-const cliUsage = new CliUsageService(os.homedir(), (path) => {
-  const reading = readTranscript(path);
-  return { usage: reading.usage, model: reading.model, messages: reading.messages };
-});
+/**
+ * 止まった瞬間と、そのとき何が走っていたか。
+ *
+ * 外から測れば「止まった」までは分かるが、周期の仕事は十数あるので**時刻から
+ * 当てるのは当て物**になる（実測 2026-09-28、3.9秒 の停止が 240秒 に一度）。
+ * 当て物をやめるための計器。読むのは `GET /api/health/stalls`。
+ */
+const loopWatch = new LoopWatch();
+loopWatch.start();
+
+/*
+ * ごみ集めも輪を止める。**名乗る相手がいないので、ここで名乗らせる。**
+ *
+ * どの仕事にも属さない停止が残るなら、次の疑いはここ（大きな山を一度に片づける
+ * ときは秒単位になる）。疑いのままにせず、測れる形にしておく。
+ */
+try {
+  const gc = new PerformanceObserver((list) => {
+    for (const entry of list.getEntries()) {
+      loopWatch.record(`gc.${(entry as any).detail?.kind ?? 'unknown'}`, entry.duration, entry.startTime + performance.timeOrigin);
+    }
+  });
+  gc.observe({ entryTypes: ['gc'] });
+} catch (err: any) {
+  activityLog.log({ level: 'warn', event: 'loopwatch.gc_unavailable', detail: { message: err?.message ?? String(err) } });
+}
+
+/**
+ * 使用量の掃き直しは、別プロセスで。
+ *
+ * `read()` は掃き直しを `setTimeout(0)` に預けていた。頼んだ人は待たないが、
+ * **同じ一本の輪なので他の全員が待つ。**実測 2026-09-28: 外から 100ms ごとに
+ * 叩いて、180秒のうち最大 1.7秒 の遅れが二度。遅れた回の往復そのものが遅れの
+ * 全部で、後続はその後ろに並んだだけ —— 塞いでいたのは掃き直しだった。
+ *
+ * 読む量は 7 日ぶんの転記 197 本・4.7 GB で、うち一本は書きかけの 108 MB。
+ * `scripts/sessions-scan.ts` を子プロセスへ出したのと同じ話で、同じ形で直す。
+ */
+let cliUsageRefresh: Promise<void> | null = null;
+function refreshCliUsage(): Promise<void> {
+  if (cliUsageRefresh) return cliUsageRefresh;
+  cliUsageRefresh = new Promise<void>((resolve) => {
+    const tsx = path.join(process.cwd(), 'node_modules', '.bin', 'tsx');
+    execFile(
+      tsx, ['scripts/cli-usage-scan.ts', os.homedir()],
+      { cwd: process.cwd(), maxBuffer: 8 * 1024 * 1024, timeout: 120_000 },
+      (err, stdout) => {
+        cliUsageRefresh = null;
+        if (err) {
+          activityLog.log({ level: 'warn', event: 'usage.sweep_failed', detail: { message: String(err.message).slice(0, 300) } });
+          return resolve();
+        }
+        try {
+          loopWatch.during('usage.parse', () => cliUsage.accept(JSON.parse(stdout)));
+        } catch (e: any) {
+          activityLog.log({ level: 'warn', event: 'usage.sweep_unreadable', detail: { message: e?.message } });
+        }
+        resolve();
+      }
+    );
+  });
+  return cliUsageRefresh;
+}
+
+/**
+ * プロジェクト別の内訳。**要求の中で走らせない。**
+ *
+ * `readSessionUsage` は 7 日ぶんの転記 197 本・4.7 GB を同期で読む。
+ * `GET /api/allowance/breakdown` はそれを毎回、キャッシュ無しで呼んでいて、
+ * 実測 2026-09-28 で一回の要求が **10.2秒** サーバ全体を止めていた。
+ *
+ * 日数ごとに別の答えなので、日数を鍵にして持つ。新しさは 5 分 —— 転記は
+ * その速さでしか増えない。
+ */
+const sessionUsageCaches = new Map<number, FreshEnough<SessionUsageRead>>();
+function sessionUsage(days: number): FreshEnough<SessionUsageRead> {
+  const held = sessionUsageCaches.get(days);
+  if (held) return held;
+  const cache = new FreshEnough<SessionUsageRead>(5 * 60_000, () =>
+    new Promise<SessionUsageRead>((resolve, reject) => {
+      const tsx = path.join(process.cwd(), 'node_modules', '.bin', 'tsx');
+      execFile(
+        tsx, ['scripts/session-usage-scan.ts', os.homedir(), String(days)],
+        { cwd: process.cwd(), maxBuffer: 32 * 1024 * 1024, timeout: 120_000 },
+        (err, stdout) => {
+          if (err) return reject(err);
+          try {
+            // 解くのはここなので、ここも名乗る。
+            resolve(loopWatch.during('allowance.breakdown.parse', () => JSON.parse(stdout) as SessionUsageRead));
+          } catch (e) {
+            reject(e);
+          }
+        }
+      );
+    })
+  );
+  sessionUsageCaches.set(days, cache);
+  return cache;
+}
+
+/**
+ * 作業場所の探索は、課題ごとに覚えておく。
+ *
+ * `findWorkplace` はフォルダを同期で walk する。課題が七つあると七回で、
+ * `GET /api/fdp/tasks` の同期の塞ぎ（実測 2026-09-28、最悪 525ms）はこれ。
+ * **場所は分の単位で動かない**ので、5 分覚えておけば足りる。
+ */
+const workplaceMemo = new Map<string, { at: number; value: ReturnType<typeof findWorkplace> }>();
+function workplaceOf(task: any): ReturnType<typeof findWorkplace> {
+  const key = `${task?.id ?? ''}|${task?.title ?? ''}`;
+  const held = workplaceMemo.get(key);
+  if (held && Date.now() - held.at < 5 * 60_000) return held.value;
+  const value = findWorkplace(task, FDP_WORK_ROOTS);
+  workplaceMemo.set(key, { at: Date.now(), value });
+  return value;
+}
+
+const cliUsage = new CliUsageService(
+  os.homedir(),
+  (path) => {
+    const reading = readTranscript(path);
+    return { usage: reading.usage, model: reading.model, messages: reading.messages };
+  },
+  undefined,
+  () => { void refreshCliUsage(); }
+);
 {
   const l = budget.getLimits();
   console.log(
@@ -1699,6 +1848,58 @@ app.post('/api/experiences', (req, res) => {
   }
 });
 
+/**
+ * これからやろうとしていることが、記録された失敗と同じ形か。
+ *
+ * `experience.ts` の冒頭が、この口が無かったことの結果をそのまま書いている
+ * —— 同じ形で三度失敗した試みが三件あり、「Each was noticed, fixed, and then
+ * repeated」。読む口（`GET /api/experiences?recurring=true`、MCP の `attempts`）
+ * は前からあった。**読まれなかった。**
+ *
+ * だから読む側ではなく、**やる側から呼ぶ**。`scripts/repeat-guard.ts` が
+ * Claude Code の PreToolUse から叩き、該当すれば命令が走る前に止まる。
+ *
+ * `coverage` を必ず返す。**0件は「問題なし」ではない** —— 判断についての失敗
+ * （「テストが通ったから正しい」）は命令に現れないので述語では捕まえられず、
+ * それを黙って落とすと、覚えていることと止められることの差が消える。
+ */
+/**
+ * サーバが止まった瞬間と、そのとき走っていた仕事。
+ *
+ * 止まっていることは外からも分かるが、**何が止めたかは中でしか分からない。**
+ * 2026-09-28 にこれを追うのに、周期の仕事を一つずつ当たって半日かけた。
+ * 次は当たらずに読めるように。
+ *
+ * `during` が null の停止は「名乗っていない仕事」で、**無事ではない。**
+ */
+app.get('/api/health/stalls', (_req, res) => {
+  res.json({
+    stalls: loopWatch.recent(),
+    summary: loopWatch.summary(),
+    /** 長くかかった区間。停止が「不明」のときは、ここから辿る。 */
+    slowest: loopWatch.slowest(),
+    running: loopWatch.current(),
+    note: 'during が null の停止は、名乗っていない仕事です（無事ではありません）。300ms 未満は残していません。',
+  });
+});
+
+app.post('/api/experiences/check', (req, res) => {
+  try {
+    const recurring = experiences.recurringFailures().map((e) => ({
+      attempt: e.attempt, learned: e.learned, observations: e.observations,
+    }));
+    const hits = guardAgainstRepeats({ command: typeof req.body?.command === 'string' ? req.body.command : undefined }, recurring);
+    res.json({
+      hits,
+      explain: hits.length ? explainHits(hits) : null,
+      coverage: coverage(recurring),
+      note: '該当0件は「安全」ではありません。coverage.uncovered は覚えているが止められない失敗です。',
+    });
+  } catch (err) {
+    handleError(res, err, 'experiences.check_error');
+  }
+});
+
 // -------------------------------------------------------------- future features
 
 app.get('/api/register', (req, res) => {
@@ -2248,9 +2449,12 @@ context.registerKind({
 });
 
 context.registerKind({
-  kind: 'deadline.tomorrow',
-  description: '明日が期限の課題',
-  // 一日で消える。明後日になれば「明日が期限」ではない。
+  kind: 'deadline.pressing',
+  description: '期限が迫っている、または過ぎている課題',
+  /*
+   * 一日で消える。**消えても、翌日また観測される** —— 過ぎた期限は翌日も
+   * 過ぎたままなので、一度言って終わりにはならない。
+   */
   validForMs: 20 * 60 * 60_000,
 });
 
@@ -2456,7 +2660,7 @@ async function observeCalendar() {
   }
 }
 void observeCalendar();
-const calendarTimer = setInterval(observeCalendar, 30 * 60_000);
+const calendarTimer = setInterval(() => void loopWatch.around('calendar.observe', async () => observeCalendar()), 30 * 60_000);
 
 /**
  * Claude の割合を三十分ごとに取り直す。
@@ -2470,7 +2674,7 @@ const calendarTimer = setInterval(observeCalendar, 30 * 60_000);
  * 表示の都合と、値の鮮度は、別々に持たなければならない。三十分はもとの拍と
  * 同じで、掃除の仕組み（probe_cleanup）もその前提で作ってある。
  */
-const allowanceTimer = setInterval(() => refreshAllowance(os.homedir(), 30), 30 * 60_000);
+const allowanceTimer = setInterval(() => loopWatch.during('allowance.refresh', () => refreshAllowance(os.homedir(), 30)), 30 * 60_000);
 allowanceTimer.unref?.();
 calendarTimer.unref();
 
@@ -2543,10 +2747,10 @@ if (process.env.GOOGLE_CLIENT_ID) scheduleGrantHealth(GRANT_SETTLE_MS);
 // Retention is only a promise until something enforces it. Hourly, and once
 // at startup for a machine that was off when the window passed.
 contextStore.prune();
-const pruneTimer = setInterval(() => {
+const pruneTimer = setInterval(() => loopWatch.during('memory.prune', () => {
   const pruned = contextStore.prune();
   if (pruned.length > 0) activityLog.info('context.pruned', { detail: { pruned } });
-}, 60 * 60_000);
+}), 60 * 60_000);
 pruneTimer.unref();
 
 /**
@@ -3335,7 +3539,7 @@ orchestrator?.setDelegationCheck(({ tool, args, origin }) => {
 });
 
 void drainAgentSchedule();
-const agentScheduleTimer = setInterval(() => void drainAgentSchedule(), 60_000);
+const agentScheduleTimer = setInterval(() => void loopWatch.around('agents.schedule', () => drainAgentSchedule()), 60_000);
 agentScheduleTimer.unref();
 
 /** Queue a run for later. The moment of queueing is the authorization. */
@@ -3470,10 +3674,11 @@ app.post('/api/agent/start', async (req, res) => {
  * dollar figure was the wrong unit, and says nothing yet about what a fair
  * split would be.
  */
-app.get('/api/allowance/breakdown', (req, res) => {
+app.get('/api/allowance/breakdown', async (req, res) => {
   const days = Math.min(Math.max(parseInt(String(req.query.days ?? '7'), 10) || 7, 1), 90);
   const since = new Date(Date.now() - days * 86_400_000).toISOString();
-  const sessions = readSessionUsage(os.homedir(), days);
+  const cache = sessionUsage(days);
+  const sessions = await cache.get();
   const claudeWeek = weekPercentOf('claude');
 
   /**
@@ -3697,10 +3902,10 @@ defaultToolRegistry.registerAll(createFinanceTools(finance));
 // than at import: a promise kept only when something is imported is not kept
 // on the months when nothing is.
 finance.prune();
-const financePruneTimer = setInterval(() => {
+const financePruneTimer = setInterval(() => loopWatch.during('finance.prune', () => {
   const { deleted } = finance.prune();
   if (deleted > 0) activityLog.info('finance.pruned', { detail: { deleted } });
-}, 60 * 60_000);
+}), 60 * 60_000);
 financePruneTimer.unref();
 
 /** What is sitting in the folder waiting to be read. */
@@ -4188,7 +4393,7 @@ void (() => {
   const result = backups.run();
   if (!result.ok) console.warn(`⚠️  バックアップを取得できません: ${result.reason}`);
 })();
-const backupTimer = setInterval(() => backups.run(), 24 * 60 * 60_000);
+const backupTimer = setInterval(() => loopWatch.during('backups.run', () => backups.run()), 24 * 60 * 60_000);
 backupTimer.unref();
 
 app.get('/api/backups', (_req, res) => {
@@ -4788,11 +4993,16 @@ const voice = new VoiceLoop({
    * heard. A failure here is logged and changes nothing else — being unable to
    * say the reply is not the same as being unable to give it.
    */
-  speak: (text) => {
-    void tts.speak(text, {}).catch((err: any) => {
+  /*
+   * 約束を返す。**声の列が本当に順番を守るのはここ次第。**
+   *
+   * `void` で投げっぱなしにすると、列は呼び出しの順を守るだけで、**前の音が
+   * 鳴り終わる前に次が始まる。**文ごとに喋るようにした以上、待つ相手がいる。
+   */
+  speak: (text) =>
+    tts.speak(text, {}).then(() => undefined).catch((err: any) => {
       activityLog.warn('voice.speak_failed', { detail: { message: err?.message ?? String(err) } });
-    });
-  },
+    }),
   conversationId: () => voiceConversation,
   setConversationId: (id) => { voiceConversation = id; },
   onEvent: (event) => {
@@ -5260,6 +5470,8 @@ app.post('/api/calendar/events', async (req, res) => {
         : await icloudCalendar.createEvent({
             calendarUrl: calendarId, title, start, end, allDay, location, timeZone,
           });
+    // 書いたら使い回しを捨てる。入れたものが「無い」と報告されないため。
+    calendar.forget();
     activityLog.info('calendar.event_created', {
       message: `${title} を登録した`,
       detail: { source, calendarId, start, end, allDay, timeZone, id: created.id },
@@ -5388,6 +5600,7 @@ app.get('/api/lectures/divergence', async (req, res) => {
       source: schedule.source,
       ...findLectureDivergence({
         lectures: schedule.lectures,
+        exams: schedule.exams,
         events,
         from: key(today),
         to: key(until),
@@ -5436,6 +5649,7 @@ app.post('/api/lectures/import', async (req, res) => {
     }
     const gap = findLectureDivergence({
       lectures: schedule.lectures,
+      exams: schedule.exams,
       events,
       from: key(today),
       to: key(until),
@@ -5490,6 +5704,7 @@ app.post('/api/lectures/import', async (req, res) => {
               allDay: false, location: null, timeZone,
             });
         added.push({ ...e, id: made.id });
+        calendar.forget();
       } catch (err: any) {
         // 途中で止めない。**入った分と入らなかった分を、両方数えて返す。**
         failed.push({ ...e, error: err?.message ?? String(err) });
@@ -5534,7 +5749,8 @@ app.post('/api/lectures/retime', async (req, res) => {
       calendarReason = err?.message ?? String(err);
     }
     const gap = findLectureDivergence({
-      lectures: schedule.lectures, events, from: key(today), to: key(until),
+      lectures: schedule.lectures,
+      exams: schedule.exams, events, from: key(today), to: key(until),
       scheduleReason: schedule.reason, calendarReason, gridFaults: schedule.gridFaults,
     });
     if (!gap.compared) {
@@ -5573,6 +5789,8 @@ app.post('/api/lectures/retime', async (req, res) => {
           calendarId, eventId: found.id, start: e.start, end: e.end, timeZone,
         });
         fixed.push({ ...e, id: found.id });
+        // 書いたら使い回しを捨てる（直した時刻が古い答えに隠れないため）。
+        calendar.forget();
       } catch (err: any) {
         missed.push({ ...e, error: err?.message ?? String(err) });
       }
@@ -5647,6 +5865,7 @@ app.post('/api/calendar/events/settime', async (req, res) => {
         end: it.end ? String(it.end) : null, timeZone,
       });
       done.push(it.id);
+      calendar.forget();
     } catch (err: any) {
       failed.push({ id: it.id, error: err?.message ?? String(err) });
     }
@@ -5671,6 +5890,8 @@ app.post('/api/calendar/events/remove', async (req, res) => {
   for (const id of ids) {
     try {
       await googleCalendar.deleteEvent(calendarId, id);
+      // 書いたら使い回しを捨てる。消したものが「まだある」と読まれないため。
+      calendar.forget();
       removed.push(id);
     } catch (err: any) {
       failed.push({ id, error: err?.message ?? String(err) });
@@ -5787,7 +6008,10 @@ function refreshSessions(window: number): Promise<void> {
           return resolve();
         }
         try {
-          sessionsCache = { at: Date.now(), hours: window, value: JSON.parse(stdout) };
+          // 読み取りは子に出したが、**結果を解くのはここ。**大きければここで止まる。
+          loopWatch.during('sessions.parse', () => {
+            sessionsCache = { at: Date.now(), hours: window, value: JSON.parse(stdout) };
+          });
         } catch (e: any) {
           activityLog.log({ level: 'warn', event: 'sessions.scan_unreadable', detail: { message: e?.message } });
         }
@@ -5919,19 +6143,44 @@ app.post('/api/speech/drain', (_req, res) => {
 /** The real drain, for the loop only. Not routed. */
 function drainForLoop() {
   const drained = speech.drain();
-  return {
-    transcripts: (drained.transcripts ?? []).map((t: { text: string; at: string }) => {
-      const wake = detectWakeWord(t.text);
-      return {
-        text: t.text,
-        at: t.at,
-        addressed: wake.addressed,
-        // The utterance with the name removed, so the request reads as a
-        // request rather than as a greeting.
-        request: wake.addressed ? wake.request : t.text,
-      };
-    }),
-  };
+  /*
+   * 自分の声を、答える相手から外す。
+   *
+   * 割り込み判定は**読み上げを止めるか**を決めるだけで、**答えるか**は別だった。
+   * 名前を含む文を IRIS 自身が読み上げると、マイクが拾い、名前があるので
+   * 「呼ばれた」ことになり、IRIS が自分に答える —— **マイクが自分から模型に
+   * 話しかける輪**で、作らないと決めてある配置そのもの。文ごとに喋るように
+   * したぶん、声に出す回数が増えて起きやすくなった。
+   *
+   * 鳴っている間に聞こえたもの全部を捨てはしない。それをやると**割り込みが
+   * 死ぬ** —— 被せて話しかけたのに無視される。読み上げている文に似ているか
+   * だけを見る（`own_voice.ts`）。
+   */
+  const speaking = tts.currentUtterance();
+  const kept: Array<{ text: string; at: string; addressed: boolean; request: string }> = [];
+  for (const t of (drained.transcripts ?? []) as Array<{ text: string; at: string }>) {
+    const heardAt = Date.parse(t.at);
+    const verdict = isOwnVoice(t.text, speaking ?? null, Number.isFinite(heardAt) ? heardAt : Date.now());
+    if (verdict.own) {
+      activityLog.log({
+        level: 'info',
+        event: 'voice.own_voice_ignored',
+        message: '自分の読み上げを聞き取ったので、答えませんでした。',
+        detail: { heard: t.text.slice(0, 60) },
+      });
+      continue;
+    }
+    const wake = detectWakeWord(t.text);
+    kept.push({
+      text: t.text,
+      at: t.at,
+      addressed: wake.addressed,
+      // The utterance with the name removed, so the request reads as a
+      // request rather than as a greeting.
+      request: wake.addressed ? wake.request : t.text,
+    });
+  }
+  return { transcripts: kept };
 }
 
 function req_locale(req: any): string {
@@ -6061,7 +6310,13 @@ app.get('/api/usage/cli', (_req, res) => {
  */
 app.post('/api/usage/cli/refresh', async (_req, res) => {
   try {
+    /*
+     * 掃き直しは別プロセスに出たので、**押した人だけは待つ。**待たないと、
+     * この口は古い答えを返して「押しても何も変わらない」ボタンになる ——
+     * 上のコメントがそう決めている。他の口（`read()`）は待たない。
+     */
     cliUsage.invalidate();
+    await refreshCliUsage();
     /**
      * Claude の割合は、走らせてみないと分からない。
      *
@@ -6144,6 +6399,22 @@ const focus = fdpSheets
   : null;
 
 /**
+ * 今日の一件は、要求のたびに組み直さない。
+ *
+ * `build()` はシートへ六本の問い合わせを並べる。**待ち時間はほぼ全部が網**で、
+ * 実測 2026-09-28 で `GET /api/focus` が 4.8〜6.1秒。盤と画面の両方が繰り返し
+ * 聞くので、そのたびに六本出していた。
+ *
+ * 「今日どれをやるか」は分の単位で変わらないので、60 秒は古くてよい。古さを
+ * 隠さないために、返す側に `date` が入っている（`build()` が付ける）。
+ */
+let focusHeld: FreshEnough<any> | null = null;
+function focusCache(): FreshEnough<any> {
+  if (!focusHeld) focusHeld = new FreshEnough<any>(60_000, () => focus!.build());
+  return focusHeld;
+}
+
+/**
  * The ledger itself, beside the one thing chosen from it.
  *
  * Two readers of one sheet rather than two sources: the web panel and the
@@ -6177,7 +6448,7 @@ app.get('/api/focus', async (_req, res) => {
     return;
   }
   try {
-    const result = await focus.build();
+    const result = await focusCache().get();
     /**
      * 今日、いまから先に残っている時間。
      *
@@ -6273,7 +6544,7 @@ app.get('/api/fdp/tasks', async (_req, res) => {
       // 誰が進めているか。作業場所の中に cwd を持つセッション。
       const live = (await cachedSessions(12)).sessions;
       reading.tasks = reading.tasks.map((t: any) => {
-        const workplace = findWorkplace(t, FDP_WORK_ROOTS);
+        const workplace = workplaceOf(t);
         const sessions = sessionsFor(workplace, live as any).slice(0, 3).map((s) => ({
           id: s.id, name: s.name, live: s.live, resume: s.resume, kind: s.kind, lastAt: s.lastAt, doingNow: s.doingNow ?? null, scope: s.scope,
         }));
@@ -6937,7 +7208,7 @@ function sweepProbes(): void {
   }
 }
 
-const probeSweepTimer = setInterval(sweepProbes, 24 * 60 * 60_000);
+const probeSweepTimer = setInterval(() => loopWatch.during('probes.sweep', () => sweepProbes()), 24 * 60 * 60_000);
 probeSweepTimer.unref();
 
 /**
@@ -7055,7 +7326,8 @@ async function watch(): Promise<void> {
       const events = ((await calendar.readBest(400)).events ?? []) as any[];
       const dates = schedule.lectures.map((l) => l.date).sort();
       const gap = findLectureDivergence({
-        lectures: schedule.lectures, events,
+        lectures: schedule.lectures,
+        exams: schedule.exams, events,
         from: at.slice(0, 10), to: dates[dates.length - 1] ?? at.slice(0, 10),
         scheduleReason: schedule.reason, calendarReason: null, gridFaults: schedule.gridFaults,
       });
@@ -7075,19 +7347,36 @@ async function watch(): Promise<void> {
       `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
     const until = new Date(today.getFullYear(), today.getMonth(), today.getDate() + 59);
     const gap = findLectureDivergence({
-      lectures: schedule.lectures, events, from: key(today), to: key(until),
+      lectures: schedule.lectures,
+      exams: schedule.exams, events, from: key(today), to: key(until),
       scheduleReason: schedule.reason, calendarReason: null, gridFaults: schedule.gridFaults,
     });
     // 比べられなかったときは観測しない。**比べていないことを「0件」にしない。**
     if (gap.compared) {
       const total = gap.missing.length + gap.moved.length + gap.shifted.length + gap.surplus.length;
       if (total > 0) {
+        /*
+         * 試験は数で言わない。**題名と日付で言う。**
+         *
+         * 「欠け1」では何が欠けているか分からない。授業の欠けは一度に七十件
+         * 出ることがあるので数えるしかないが、**試験は年に二十件ほどで、
+         * 一件の重みが違う。**2026-09-16 に「欠け0」と報告した裏で
+         * 病理学Ⅱ各論試験が暦に無かったのは検査の穴だったが、仮に数えられて
+         * いても「欠け1」では動けなかった。
+         */
+        const exams = [
+          ...gap.missing.filter((g) => g.kind === 'exam').map((g) => `${g.date} ${g.title.replace(/[\s　]+/g, '')}（暦に無い${g.scheduled ? `／紙は${g.scheduled}` : ''}）`),
+          ...gap.moved.filter((g) => g.kind === 'exam').map((g) => `${g.date} ${g.title.replace(/[\s　]+/g, '')}（紙${g.scheduled}／暦${g.calendar}）`),
+          ...gap.shifted.filter((g) => g.kind === 'exam').map((g) => `${g.title.replace(/[\s　]+/g, '')}（紙${g.date}／暦${g.calendar}）`),
+          ...gap.surplus.filter((g) => g.kind === 'exam').map((g) => `${g.date} ${g.title.replace(/[\s　]+/g, '')}（紙に無い）`),
+        ];
+        const counts = `欠け${gap.missing.length}・時刻違い${gap.moved.length}・日ずれ${gap.shifted.length}・余分${gap.surplus.length}`;
         context.observe({
           source: 'iris.watch',
           kind: 'lectures.divergent',
           value: total,
           confidence: 1,
-          evidence: `欠け${gap.missing.length}・時刻違い${gap.moved.length}・日ずれ${gap.shifted.length}・余分${gap.surplus.length}`,
+          evidence: exams.length ? `${counts}。試験: ${exams.join('、')}` : counts,
           observedAt: at,
         });
       }
@@ -7130,25 +7419,38 @@ async function watch(): Promise<void> {
     }
   } catch (err: any) { missed('fdp.progress_from_ledger', err); }
 
-  // ── 明日が期限 ─────────────────────────────────
+  // ── 期限が迫っている、または過ぎている ──────────────
+  /*
+   * 条件は `dueInDays === 1` だった。**前日に一度だけ言って、そのあとは何も
+   * 言わない。**今日が期限（0日）も、過ぎた期限（負）も、条件から外れる。
+   *
+   * 実測 2026-09-30: T005 は当日、T011 は 13 日超過で、どちらも一度も鳴って
+   * いなかった。台帳は同じものを見て `期限間近`・`遅延` と判定しているのに、
+   * **その判定を誰も読んでいなかった。**
+   *
+   * だから日数を数え直さず、台帳の判定をそのまま条件にする。閾値は設定タブに
+   * あり、**二箇所で別々に決めない。**
+   */
   try {
     const reading = fdpTasks ? await fdpTasks.read() : null;
     const tasks: any[] = (reading as any)?.tasks ?? [];
-    const due = tasks.filter((t: any) => {
-      const days = t?.dueInDays;
-      return typeof days === 'number' && days === 1 && t?.status !== '完了';
-    });
-    if (due.length) {
+    const pressing = pressingTasks(tasks);
+    if (pressing.length) {
+      /*
+       * 件数ではなく、名前と残り日数で言う。**「1件」では動けない** ——
+       * 試験の食い違いで同じことを学んだ。
+       */
+      const named = pressing.slice(0, 5).map(describePressing);
       context.observe({
         source: 'iris.watch',
-        kind: 'deadline.tomorrow',
-        value: due.map((t: any) => t.title).slice(0, 5),
+        kind: 'deadline.pressing',
+        value: named,
         confidence: 1,
-        evidence: `${due.length}件`,
+        evidence: named.join('、'),
         observedAt: at,
       });
     }
-  } catch (err: any) { missed('deadline.tomorrow', err); }
+  } catch (err: any) { missed('deadline.pressing', err); }
 }
 
 /**
@@ -7195,17 +7497,33 @@ const WATCH_RULES: Array<Parameters<typeof proactive.addRule>[0]> = [
     description: '講義日程表とカレンダーの食い違いを伝える',
     conditions: [{ kind: 'lectures.divergent', minConfidence: 0.9 }],
     // 日程表の版が上がったときに効く。人の記憶に頼らないための規則。
+    // 試験が絡む食い違いは `evidence` に題名と日付で入る（数だけでは動けない）。
     suggestion: '講義日程表とカレンダーが食い違っています。見ますか。',
     cooldownMs: 24 * 60 * 60_000,
   },
   {
-    id: 'watch.deadline-tomorrow',
-    description: '明日が期限の課題を、前日のうちに伝える',
-    conditions: [{ kind: 'deadline.tomorrow', minConfidence: 0.9 }],
-    suggestion: '明日が期限の課題があります。',
+    id: 'watch.deadline-pressing',
+    description: '期限が迫っている、または過ぎている課題を伝える',
+    conditions: [{ kind: 'deadline.pressing', minConfidence: 0.9 }],
+    /*
+     * 前の版は「明日が期限」だけを見ていたので、**逃すと二度と言わなかった。**
+     * 過ぎた期限は翌日も過ぎたままなので、静まるのは片付いたときだけ。
+     */
+    suggestion: '期限が迫っている、または過ぎている課題があります。',
+    // 半日。**毎回言うと読み飛ばされ、一度きりだと逃す。**
     cooldownMs: 12 * 60 * 60_000,
   },
 ];
+
+/*
+ * 置き換えた規則は**消さずに無効にする。**置き場のコメントが理由を書いている
+ * ——「消すと、なぜ在ったかも消える」。`deadline.tomorrow` はもう観測されない
+ * ので、有効なままでも鳴らないが、**鳴らない規則が有効の顔で並んでいる**のは
+ * 別の嘘になる。
+ */
+try {
+  proactiveRules.setEnabled('watch.deadline-tomorrow', false);
+} catch { /* 無かったなら何もしない */ }
 
 for (const rule of WATCH_RULES) {
   try {
@@ -7218,11 +7536,11 @@ for (const rule of WATCH_RULES) {
   }
 }
 
-const watchTimer = setInterval(() => { void watch(); }, 10 * 60_000);
+const watchTimer = setInterval(() => { void loopWatch.around('watch', () => watch()); }, 10 * 60_000);
 watchTimer.unref?.();
-setTimeout(() => { void watch(); }, 20_000);
+setTimeout(() => { void loopWatch.around('watch.boot', () => watch()); }, 20_000);
 
-const proactiveTimer = setInterval(() => {
+const proactiveTimer = setInterval(() => loopWatch.during('proactive.evaluate', () => {
   try {
     if (proactive.listRules().length === 0) return;
     proactive.evaluate();
@@ -7232,15 +7550,15 @@ const proactiveTimer = setInterval(() => {
       detail: { message: err?.message ?? String(err) },
     });
   }
-}, 2 * 60_000);
+}), 2 * 60_000);
 proactiveTimer.unref?.();
 
-const briefingTimer = setInterval(writeBriefingFile, 5 * 60_000);
+const briefingTimer = setInterval(() => loopWatch.during('briefing.write', () => writeBriefingFile()), 5 * 60_000);
 briefingTimer.unref();
 
 const server = app.listen(PORT, () => {
-  writeBriefingFile();
-  sweepProbes();
+  loopWatch.during('briefing.write.boot', () => writeBriefingFile());
+  loopWatch.during('probes.sweep.boot', () => sweepProbes());
   /*
    * セッションの cache を温めておく。
    *
@@ -7250,7 +7568,45 @@ const server = app.listen(PORT, () => {
    * `staleOk` に乗る。走らせている間は他の応答も止まるが、起動直後の 3 秒後
    * なら誰も待っていない。
    */
-  setTimeout(() => { void cachedSessions(12); }, 3000).unref?.();
+  setTimeout(() => { void loopWatch.around('sessions.warmup', () => cachedSessions(12)); }, 3000).unref?.();
+  /*
+   * 高いものは先に温めておく。**最初に聞いた人が待つ役にならないように。**
+   *
+   * 実測 2026-09-28、温める前の一回目: 内訳 8.71秒・今日の一件 4.77秒・
+   * 暦 3.41秒。二回目からは 0.02〜0.04秒。待つ人がいなくなったわけではなく、
+   * **待つ役が起動直後のここに移った**だけ —— そこには誰も並んでいない。
+   */
+  const warmed = (what: string) => (err: any) =>
+    // 温めの失敗は作業を止めないが、**黙って落ちるのは別の話。**
+    activityLog.log({ level: 'warn', event: 'warmup.failed', detail: { what, message: err?.message ?? String(err) } });
+  setTimeout(() => {
+    void loopWatch.around('breakdown.warmup', () =>
+      sessionUsage(7).get().then(() => undefined).catch(warmed('allowance.breakdown'))
+    );
+  }, 5000).unref?.();
+  setTimeout(() => {
+    if (!focus) return;
+    void loopWatch.around('focus.warmup', () =>
+      focusCache().get().then(() => undefined).catch(warmed('focus'))
+    );
+  }, 7000).unref?.();
+  /*
+   * 暦は日数ごとに別の答えなので、**実際に聞かれる日数**を温める。
+   * 呼び出し側が使っているのは 1・2・14・60・180・400（grep で数えた）。
+   * 400 は日程表の突き合わせだけが使い、重いので温めない —— 押した人が待つ。
+   */
+  setTimeout(() => {
+    void loopWatch.around('calendar.warmup', async () => {
+      for (const days of [2, 14, 60]) {
+        try { await calendar.readBest(days); } catch { /* 温めの失敗は失敗ではない */ }
+      }
+    });
+  }, 9000).unref?.();
+  setTimeout(() => {
+    if (!fdpTasks) return;
+    // 課題の一覧も温める。設定タブを網越しに取るのが 5.2 秒だった。
+    void loopWatch.around('fdp.warmup', () => fdpTasks!.read().then(() => undefined).catch(() => undefined));
+  }, 11_000).unref?.();
   console.log(`🤖 IRIS Core Server running on http://localhost:${PORT}`);
   console.log(`   schema v${getSchemaVersion(db)} | db ${dbPath}`);
   console.log(`   workspace ${defaultWorkspace.root}`);
@@ -7303,9 +7659,13 @@ const server = app.listen(PORT, () => {
     ]);
   };
 
-  const snapshotProjects = () => {
+  /*
+   * 同じ走査を二人が別々にやらない。**内訳の口と同じ手元の答えを使う。**
+   * 6時間ごとの記録のために 4.7 GB を読み直すと、その間サーバが止まる。
+   */
+  const snapshotProjects = async () => {
     try {
-      const read = readSessionUsage(os.homedir(), 7);
+      const read = await sessionUsage(7).get();
       history.recordProjects(
         7,
         read.projects.map((p) => ({
@@ -7332,8 +7692,8 @@ const server = app.listen(PORT, () => {
    */
   setTimeout(snapshotAllowance, 30_000);
   setTimeout(snapshotProjects, 45_000);
-  setInterval(snapshotAllowance, 20 * 60_000).unref?.();
-  setInterval(snapshotProjects, 6 * 60 * 60_000).unref?.();
+  setInterval(() => loopWatch.during('allowance.snapshot', () => snapshotAllowance()), 20 * 60_000).unref?.();
+  setInterval(() => void loopWatch.around('projects.snapshot', () => snapshotProjects()), 6 * 60 * 60_000).unref?.();
 });
 
 // Close the database cleanly so WAL is checkpointed on shutdown.
