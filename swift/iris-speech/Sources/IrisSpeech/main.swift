@@ -51,12 +51,23 @@ func emit(_ event: String, _ fields: [String: Any] = [:]) {
     FileHandle.standardError.write(Data("failed to encode event \(event)\n".utf8))
     return
   }
-  print(line)
-  fflush(stdout)
-
   // Launched through LaunchServices there is no stdout to read, and that is
   // exactly the launch path needed to become our own TCC responsible process
   // rather than inheriting a decision already made for the parent.
+  //
+  // `--out` が与えられているときは stdout に出さない。**同じものを二箇所に
+  // 置かない。**
+  //
+  // 出していた頃、launchd は stdout を `speech-agent.out.log` へ繋いでいて、
+  // そこには回す仕組みが無かった。`speech-events.jsonl` は起動のたびに書き
+  // 直されるので今日の分しか残らないのに、**ログの方は 2026-08-19 から
+  // 積み上がっていた** —— 聞こえた言葉 95 件が、消したつもりの場所の隣に
+  // 残っていた（実測 2026-09-29、276 KB）。
+  if outputPath == nil {
+    print(line)
+    fflush(stdout)
+  }
+
   if let path = outputPath, let data = (line + "\n").data(using: .utf8) {
     if let handle = FileHandle(forWritingAtPath: path) {
       handle.seekToEndOfFile()

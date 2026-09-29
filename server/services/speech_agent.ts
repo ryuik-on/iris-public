@@ -111,7 +111,20 @@ ${argXml}
   <key>RunAtLoad</key><false/>
   <key>KeepAlive</key><false/>
   <key>WorkingDirectory</key><string>/tmp</string>
-  <key>StandardOutPath</key><string>${escapeXml(join(this.stateDir, 'speech-agent.out.log'))}</string>
+  <!--
+    標準出力は捨てる。同じものを二箇所に置かない。
+
+    助手は out オプションで受け取ったファイルに同じ行を書く。launchd がそれを更に
+    ログへ流していたが、そのログを回す仕組みが無かった。speech-events.jsonl は
+    起動のたびに書き直されるので今日の分しか残らないのに、ログは 2026-08-19
+    から積み上がり、聞こえた言葉 95 件が 276 KB ぶん残っていた（実測
+    2026-09-29）。消したつもりの隣に、同じものがあった。
+
+    助手の側も直してある（out オプションがあるときは print しない）が、そちらはアプリを
+    作り直さないと効かない。作り直すとマイクの許可が署名に紐づいているぶん
+    取り直しになるので、ここで断つ。失敗は err.log に残る。
+  -->
+  <key>StandardOutPath</key><string>/dev/null</string>
   <key>StandardErrorPath</key><string>${escapeXml(join(this.stateDir, 'speech-agent.err.log'))}</string>
 </dict>
 </plist>
