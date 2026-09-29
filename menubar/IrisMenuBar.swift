@@ -498,10 +498,25 @@ struct LectureDivergence: Decodable {
      * 「その検査をしていない」だが、盤の印は付かないだけなので害は無い。
      */
     let surplus: [LectureGap]?
+    /**
+     * 紙と暦で日付が違う（前後3日以内）。
+     *
+     * 盤は暦の行に印を付けるので、**暦にある側の日付で引く。**古いサーバは
+     * 返さないので省略可。
+     */
+    let shifted: [LectureGap]?
 }
 
 struct LectureGap: Decodable {
     let title: String
+    /**
+     * 授業か試験か。**印の文字を変えるため。**
+     *
+     * 「日程表に無い」は授業なら入れ間違い程度だが、試験だと日を間違えて
+     * 勉強していることになる。古いサーバは返さないので省略可 —— 無ければ
+     * 授業として扱う。
+     */
+    let kind: String?
     let date: String
     let period: Int?
     /// 日程表の時刻。
@@ -1076,7 +1091,7 @@ final class CoreView: NSView {
      *
      * The first version put 108 dots on three rings and it read as thin,
      * because the thing that makes the real core look dense is not the number
-     * of particles — it is that each one leaves a trail. `src/Core.tsx` gets
+     * of particles — it is that each one leaves a trail. `src/Core.tsx` got
      * that from an accumulation buffer: every frame it draws new dots over the
      * old image and then fades the whole image slightly.
      *
@@ -1087,13 +1102,14 @@ final class CoreView: NSView {
      *
      * The fade is done by redrawing the buffer through itself at a fraction of
      * opacity, not by laying a dark rectangle over it. That is the note in
-     * Core.tsx worth carrying: painting over accumulates colour instead of
+     * Core.tsx worth carrying (the file is gone; it reads at `ab9eedf`): painting over accumulates colour instead of
      * removing it, and the field creeps to white and then to red. Scaling the
      * premultiplied colour decays every pixel geometrically and settles.
      */
 
     /**
-     * 熱から色へ。**`src/Core.tsx` と同じ数値。**
+     * 熱から色へ。**`src/Core.tsx` と同じ数値**（web 側は絵に置き換わり、
+     * この実装は履歴にだけある —— `git show ab9eedf:src/Core.tsx`）。
      *
      * ここは長いあいだ単色（rgb 0.20/0.72/0.99）だった。web 側のコアに淡い
      * 桃を入れたとき、こちらを置き去りにしたので**同じ印が二種類**になった。
@@ -3128,7 +3144,7 @@ final class Face: NSView {
         /**
          * 参考画像のとおり、二つの区画。予定と、進行状況。
          *
-         * （基準画像は個人情報を含むため公開版には含めていない）
+         * `docs/dashboard-reference-approved-2026-09-01.png` が唯一の基準。
          * カードにも、レーンにも、バッジにも読み替えない。
          */
         /*
@@ -3365,7 +3381,7 @@ final class Face: NSView {
                     text("日程表 \(says)", at: CGPoint(x: bounds.maxX - pad, y: base),
                          size: 11, colour: Palette.Board.amber, rightAt: bounds.maxX - pad)
                 } else if all.lectures?.compared == true,
-                          (all.lectures?.surplus ?? []).contains(where: {
+                          let extra = (all.lectures?.surplus ?? []).first(where: {
                               let mine = $0.title.replacingOccurrences(of: " ", with: "")
                                   .replacingOccurrences(of: "　", with: "")
                               return $0.date == key && (mine.contains(folded) || folded.contains(mine))
@@ -3374,9 +3390,25 @@ final class Face: NSView {
                      * 日程表のその日に無い授業。**別の日の複製**であることが多い
                      * （2026-09-16 の演習は 9/18 のものだった）。どちらが正しいとは
                      * 書かない —— 無い、とだけ。
+                     *
+                     * 試験だけは色を変える。日を間違えた試験は、間違えた日まで
+                     * 気づかない（実測 2026-09-28、暦の 10/20 病理学Ⅱ各論試験は
+                     * 紙では 10/26）。
                      */
-                    text("日程表に無い", at: CGPoint(x: bounds.maxX - pad, y: base),
-                         size: 11, colour: Palette.Board.amber, rightAt: bounds.maxX - pad)
+                    let exam = extra.kind == "exam"
+                    text(exam ? "日程表に無い試験" : "日程表に無い", at: CGPoint(x: bounds.maxX - pad, y: base),
+                         size: 11, colour: exam ? Palette.danger : Palette.Board.amber,
+                         rightAt: bounds.maxX - pad)
+                } else if all.lectures?.compared == true,
+                          let moved = (all.lectures?.shifted ?? []).first(where: {
+                              let mine = $0.title.replacingOccurrences(of: " ", with: "")
+                                  .replacingOccurrences(of: "　", with: "")
+                              return $0.calendar == key && (mine.contains(folded) || folded.contains(mine))
+                          }) {
+                    // 暦はこの日に持っているが、紙は別の日に置いている。
+                    text("日程表 \(moved.date.suffix(5))", at: CGPoint(x: bounds.maxX - pad, y: base),
+                         size: 11, colour: moved.kind == "exam" ? Palette.danger : Palette.Board.amber,
+                         rightAt: bounds.maxX - pad)
                 } else if calendar.isDateInToday(date), let road = all.road, let minutes = road.minutes,
                    date == soon.first?.0 {
                     text("移動\(minutes)分", at: CGPoint(x: bounds.maxX - pad, y: base),

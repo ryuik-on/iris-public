@@ -240,10 +240,6 @@ export function fetchSettings() {
   return request<any>('/api/settings');
 }
 
-export function fetchHealth() {
-  return request<any>('/api/health');
-}
-
 // ---------------------------------------------------------------------------
 // Ambient layer: what IRIS currently believes, hears and speaks with.
 // Each of these is read-only from the UI's point of view except where noted.

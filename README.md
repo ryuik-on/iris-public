@@ -131,8 +131,8 @@ codex  mcp add              iris -- npx tsx <このリポジトリ>/scripts/iris
 | --- | --- |
 | 開始 | 2026-08-18 |
 | コミット | **456** |
-| ソース | 264 ファイル / 約 74828 行（.ts / .tsx） |
-| テスト | `scripts/test-*.ts` × **85**。`npm test` が直列で全部回す |
+| ソース | 263 ファイル / 約 73079 行（.ts / .tsx） |
+| テスト | `scripts/test-*.ts` × **86**。`npm test` が直列で全部回す |
 | 構成 | TypeScript（Express + React/Vite）／Swift（音声認識アプリ・menubar）／launchd |
 
 **このリポジトリは公開用の写しで、コミット履歴を持ちません。** 元リポジトリの履歴には個人の家計・予定・氏名が

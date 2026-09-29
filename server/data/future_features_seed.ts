@@ -1140,7 +1140,7 @@ export const FUTURE_FEATURE_SEED: FutureFeatureInput[] = [
       '実機で55通が拒否され、すべて宣伝・明細確定通知だった。JCB の本文には Amazonプライム年会費 5,900円 が例示として書かれており、' +
       '「数字＋円」を探す実装ならこれを拾う。テストで拾わないことを固定した。' +
       '取り込み時に2つ捕まえた: エラー本文の切り詰めが対処法の URL を消していたこと、' +
-      '取得の打ち切りが無言である月の合計を実際の数十分の一に見せていたこと。後者はページングで解決し、上限到達は truncated として返す。' +
+      '取得の打ち切りが無言で7月を -3,871円（正しくは -118,830円）に見せていたこと。後者はページングで解決し、上限到達は truncated として返す。' +
       'Gmail の OAuth は MCP とは別経路（素の authorization code + PKCE）。リダイレクトは登録済みの /api/mcp/oauth/callback を共用し、' +
       'state に記録したサービス名で分岐する — 独自パスは redirect_uri_mismatch で弾かれた。'
   },
@@ -2380,7 +2380,7 @@ export const FUTURE_FEATURE_SEED: FutureFeatureInput[] = [
     evidence: [
       'server/core/budget_service.ts',
       'scripts/test-budget.ts（42件）',
-      'src/components/Telemetry.tsx の BudgetPanel',
+      'menubar/IrisMenuBar.swift が /api/budget を読んで盤に出す（2026-08-21 に web の BudgetPanel から移した。同じ数字を二箇所に出すと、片方が必ず古くなるため）',
       '実機: 月上限を $0.01 に下げ、有料2社が除外され gemini が応答することを確認',
     ],
     source: AUDIT,
