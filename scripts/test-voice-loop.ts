@@ -41,9 +41,16 @@ function build(options: {
   state?: string;
   result?: any;
   throws?: boolean;
+  /** 返事が届く刻み。渡すと、返る前に声が出るかを見られる。 */
+  deltas?: string[];
+  /** 途中で作り直す（プロバイダの失敗からの再試行）。 */
+  resetAfter?: number;
 }) {
   const sent: string[] = [];
   const events: VoiceEvent[] = [];
+  /** 喋った順。**返る前に出たかどうかが、この試験の主題。** */
+  const spoken: string[] = [];
+  let spokenBeforeReturn = 0;
   let drained = false;
 
   const loop = new VoiceLoop({
@@ -58,15 +65,27 @@ function build(options: {
         sendMessage: async (input: any) => {
           sent.push(input.message);
           if (options.throws) throw new Error('provider is down');
+          for (const [i, delta] of (options.deltas ?? []).entries()) {
+            if (options.resetAfter === i) input.stream?.reset();
+            input.stream?.delta(delta);
+            /*
+             * 本物の流れには delta の間に待ちがある。**同期でまとめて流すと、
+             * 声の列が一度も回らないまま返ってしまう** —— 偽物の都合で
+             * 「返る前に喋ったか」を測れなくしない。
+             */
+            await new Promise((r) => setTimeout(r, 0));
+          }
+          spokenBeforeReturn = spoken.length;
           return options.result ?? { status: 'completed', reply: 'はい', conversationId: 'c1' };
         },
       }) as any,
+    speak: (text: string) => { spoken.push(text); },
     onEvent: (e) => events.push(e),
     conversationId: () => null,
     setConversationId: () => {},
   });
 
-  return { loop, sent, events };
+  return { loop, sent, events, spoken, before: () => spokenBeforeReturn };
 }
 
 async function main() {
@@ -196,6 +215,89 @@ async function main() {
     });
     await Promise.all([loop.tick(), loop.tick()]);
     eq('a concurrent pass is skipped', sent.length, 1);
+  }
+
+  section('声は重ならない');
+
+  {
+    /*
+     * 列は呼び出しの順を守るだけでは足りない。**前の音が鳴り終わってから**
+     * 次を渡す。`speak` が約束を返すのはそのため。
+     */
+    const order: string[] = [];
+    let live = 0;
+    let overlapped = false;
+    const { loop } = (() => {
+      const built = build({
+        transcripts: [said('IRIS 今日の予定は', true, '今日の予定は')],
+        deltas: ['一文目です。', '二文目です。', '三文目です。'],
+        result: { status: 'completed', reply: '一文目です。二文目です。三文目です。', conversationId: 'c1' },
+      });
+      return built;
+    })();
+    // speak を差し替えて、鳴っている間を作る。
+    (loop as any).options.speak = async (text: string) => {
+      if (live > 0) overlapped = true;
+      live++;
+      order.push(text);
+      await new Promise((r) => setTimeout(r, 5));
+      live--;
+    };
+    await loop.tick();
+    await new Promise((r) => setTimeout(r, 60));
+    eq('重ならない', overlapped, false);
+    eq('順番どおり', order.join(''), '一文目です。二文目です。三文目です。');
+  }
+
+  section('返事が全部できる前に、もう喋り始めている');
+
+  {
+    /*
+     * **これがこの変更の全部。**前は `await sendMessage` が返ってから
+     * `speak(reply)` を呼んでいたので、単純な問いでも 1.35〜3.08秒 は無音だった
+     * （実測 2026-09-29）。
+     */
+    const { loop, spoken, before, events } = build({
+      transcripts: [said('IRIS 今日の予定は', true, '今日の予定は')],
+      deltas: ['今日は19時から', '職場です。', 'そのあとは', '空いています。'],
+      result: { status: 'completed', reply: '今日は19時から職場です。そのあとは空いています。', conversationId: 'c1' },
+    });
+    await loop.tick();
+    await new Promise((r) => setTimeout(r, 0));
+    eq('返る前にもう声が出ている', before() > 0, true);
+    eq('最初に出たのは一文目', spoken[0], '今日は19時から職場です。');
+    eq('言い残しは無い', spoken.join(''), '今日は19時から職場です。そのあとは空いています。');
+    eq('最初の一声を記録する', events.some((e) => e.type === 'voice.speaking'), true);
+  }
+
+  {
+    // 流れてこない相手なら、前と同じ ——「全部できてから全文を喋る」。
+    const { loop, spoken, before } = build({
+      transcripts: [said('IRIS 今日の予定は', true, '今日の予定は')],
+      result: { status: 'completed', reply: '今日は19時から職場です。', conversationId: 'c1' },
+    });
+    await loop.tick();
+    await new Promise((r) => setTimeout(r, 0));
+    eq('流れてこなければ返ってから喋る', before(), 0);
+    eq('返事は全文そのまま', spoken, ['今日は19時から職場です。']);
+  }
+
+  {
+    /*
+     * 作り直し。**出た音は戻せない。**捨てられるのは手元の分だけで、その事実を
+     * 黙って無かったことにしない。
+     */
+    const { loop, events, spoken } = build({
+      transcripts: [said('IRIS 今日の予定は', true, '今日の予定は')],
+      deltas: ['まちがった答えです。', 'ほんとうの答えです。'],
+      resetAfter: 1,
+      result: { status: 'completed', reply: 'ほんとうの答えです。', conversationId: 'c1' },
+    });
+    await loop.tick();
+    await new Promise((r) => setTimeout(r, 0));
+    eq('作り直しを記録する', events.some((e) => e.type === 'voice.restated'), true);
+    eq('言いかけた分は取り消せないので、そのまま残る', spoken[0], 'まちがった答えです。');
+    eq('新しい答えも言う', spoken.join('').includes('ほんとうの答えです。'), true);
   }
 
   console.log(`\n${'─'.repeat(60)}`);

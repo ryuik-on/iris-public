@@ -1,4 +1,5 @@
 import { ChatService } from '../core/chat_service.js';
+import { Speakable } from '../core/speakable.js';
 
 /**
  * Turning what was heard into a turn, on this side of the wire.
@@ -44,7 +45,11 @@ export interface VoiceEvent {
     | 'voice.overheard'
     | 'voice.answered'
     | 'voice.failed'
-    | 'voice.approval';
+    | 'voice.approval'
+    /** 最初の一片を声に出した。**沈黙がどれだけ短くなったかは、ここでしか測れない。** */
+    | 'voice.speaking'
+    /** 答えを作り直した。既に出た音は戻せないので、そう言う。 */
+    | 'voice.restated';
   text?: string;
   reply?: string;
   tool?: string;
@@ -67,7 +72,7 @@ export interface VoiceLoopOptions {
    * asked without looking at anything. Typed turns are untouched: speaking
    * those would start talking at a person who chose to type.
    */
-  speak?: (text: string) => void;
+  speak?: (text: string) => void | Promise<void>;
   setConversationId: (id: string) => void;
   now?: () => number;
 }
@@ -171,6 +176,25 @@ export class VoiceLoop {
     }
   }
 
+  /**
+   * 喋る順番を守るための列。
+   *
+   * 断片ごとに `speak` を呼ぶと、**前の音が鳴り終わる前に次が始まる。**一つずつ
+   * 繋いで、鳴り終わってから次を渡す。`speak` が約束を返さない作りでも
+   * （`void` を返す場合）ここは壊れない —— ただしその場合、順番は呼ばれた順に
+   * なるだけで、音の重なりは向こう側の責任になる。
+   */
+  private speaking: Promise<void> = Promise.resolve();
+
+  private say(text: string): void {
+    this.speaking = this.speaking
+      .then(() => this.options.speak?.(text))
+      .then(() => undefined)
+      .catch((err: any) => {
+        this.options.onEvent?.({ type: 'voice.failed', text, message: err?.message ?? String(err) });
+      });
+  }
+
   private async answer(message: string): Promise<void> {
     const chat = this.options.chat();
     if (!chat) {
@@ -180,9 +204,54 @@ export class VoiceLoop {
 
     this.options.onEvent?.({ type: 'voice.heard', text: message });
     try {
+      /*
+       * 文が揃った端から喋る。**返事が全部できるのを待たない。**
+       *
+       * 待っていた頃は、単純な問いでも 1.35〜3.08秒 は無音だった（実測
+       * 2026-09-29）。速いのはモデルではなく、**最初の一声までの時間**が
+       * 人の感じる速さ。`sendMessage` は前から `stream` を受け取れたので、
+       * 足りなかったのは声の側の受け口だけ。
+       */
+      const speakable = new Speakable();
+      let firstPieceAt: number | null = null;
+      const startedAt = this.options.now?.() ?? Date.now();
+
       const result = await chat.sendMessage({
         conversationId: this.options.conversationId(),
         message,
+        stream: {
+          delta: (text: string) => {
+            for (const piece of speakable.push(text)) {
+              if (firstPieceAt === null) {
+                firstPieceAt = this.options.now?.() ?? Date.now();
+                this.options.onEvent?.({
+                  type: 'voice.speaking',
+                  text: piece,
+                  message: `最初の一声まで ${firstPieceAt - startedAt}ms`,
+                });
+              }
+              this.say(piece);
+            }
+          },
+          /*
+           * 作り直し。**まだ喋っていない分は捨てられるが、出た音は戻せない。**
+           * 既に一片でも声にしていたら、聞いた人は前の答えの一部を聞いている
+           * —— 黙って無かったことにせず、そう記録する。
+           */
+          /** 何をしている最中かは、声の道では使わない（画面のための報せ）。 */
+          phase: () => {},
+          reset: () => {
+            const spokenAlready = speakable.pieces > 0;
+            speakable.reset();
+            if (spokenAlready) {
+              this.options.onEvent?.({
+                type: 'voice.restated',
+                text: message,
+                message: '答えを作り直しました。前の言いかけはもう戻せません。',
+              });
+            }
+          },
+        },
         /**
          * A person spoke. It is not an inference, and the origin decides what
          * the run may touch — calling this `inferred` would quietly forbid
@@ -211,9 +280,18 @@ export class VoiceLoop {
 
       const reply = result.reply ?? '';
       this.options.onEvent?.({ type: 'voice.answered', text: message, reply });
-      // Spoken back, because it was spoken to. The reply is already shaped for
-      // being heard — `channel: 'voice'` above asks for that.
-      if (reply) this.options.speak?.(reply);
+      /*
+       * 残りだけを喋る。**もう出した分は言い直さない。**
+       *
+       * 流れてこなかった場合（`stream` を通らない道、あるいは道具だけで
+       * 終わった turn）は一片も出ていないので、ここで返事の全文が出る ——
+       * 前と同じ振る舞いに落ちる。
+       */
+      if (speakable.pieces === 0) {
+        if (reply) this.say(reply);
+      } else {
+        for (const rest of speakable.flush()) this.say(rest);
+      }
     } catch (err: any) {
       this.options.onEvent?.({
         type: 'voice.failed',
