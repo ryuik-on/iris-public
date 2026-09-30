@@ -149,8 +149,47 @@ struct Approvals: Decodable {
     let pendingApprovals: [PendingApproval]
 }
 
+/**
+ * 先回りの提案。
+ *
+ * 長いあいだ `id` しか読んでいなかった —— 盤は**数えるだけ**で、中身を出す
+ * 相手がいなかったから。IRIS の側から声をかけるようになって、**何を言うか**が
+ * 要るようになった（`Notify.swift`）。
+ */
 struct Suggestion: Decodable {
     let id: String?
+    /// 規則の文。通知の表題になる。
+    let suggestion: String?
+    /// なぜ言うのか。通知の本文になる —— 件数では動けないのは通知でも同じ。
+    let because: [SuggestionBecause]?
+}
+
+/**
+ * 提案の根拠ひとつ。
+ *
+ * `value` は文字列にも、文字列の配列にも、数にもなる（観測の種類ごとに違う）。
+ * **読めない形を推測で埋めない** —— 読めた形だけを行にして、残りは捨てる。
+ */
+struct SuggestionBecause: Decodable {
+    let kind: String?
+    /// 表示に使える行。読めなければ空。
+    let valueLines: [String]
+
+    private enum CodingKeys: String, CodingKey { case kind, value }
+
+    init(from decoder: Decoder) throws {
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try? box.decode(String.self, forKey: .kind)
+        if let many = try? box.decode([String].self, forKey: .value) {
+            valueLines = many
+        } else if let one = try? box.decode(String.self, forKey: .value) {
+            valueLines = [one]
+        } else if let number = try? box.decode(Double.self, forKey: .value) {
+            valueLines = [String(format: number == number.rounded() ? "%.0f" : "%g", number)]
+        } else {
+            valueLines = []
+        }
+    }
 }
 
 struct Proactive: Decodable {
@@ -560,6 +599,13 @@ struct Everything {
     let pending: [PendingApproval]
     let suggestions: Int
     /**
+     * 提案そのもの。数だけでは声をかけられない。
+     *
+     * 盤は長らく数えるだけだった（出す相手がいなかったので）。IRIS の側から
+     * 声をかけるようになって、**何を言うか**が要るようになった。
+     */
+    let suggestionList: [Suggestion]
+    /**
      * Everything in range, not only the next one.
      *
      * The band says what is left today *and* what tomorrow opens with, which
@@ -719,6 +765,9 @@ final class Reader {
                                         approvals: approvals?.pendingApprovals.count ?? 0,
                                         pending: approvals?.pendingApprovals ?? [],
                                         suggestions: proactive?.pending.count ?? 0,
+                                        // 数えるだけでなく、**中身を持ち歩く。**
+                                        // IRIS の側から声をかけるのに要る。
+                                        suggestionList: proactive?.pending ?? [],
                                         events: calendar?.events ?? [],
                                         budget: budget,
                                         sessions: sessions?.sessions ?? [],
@@ -4825,6 +4874,17 @@ final class Controller: NSObject, NSApplicationDelegate {
      * 本当に失敗で、読み込み中ではない。
      */
     private var everRead = false
+
+    /**
+     * IRIS の側から声をかける口。
+     *
+     * 押されたら盤を開く —— **報せを読んで、次に何を見るかまでを一続きにする。**
+     */
+    private lazy var notifier = Notifier(onOpen: { [weak self] in
+        // 閉じているときだけ開く。**開いているものを閉じてしまわない。**
+        guard let self, self.board == nil else { return }
+        self.toggleBoard()
+    })
     /**
      * **使用量を一度でも読めたか。**`everRead` とは別に持つ。
      *
@@ -4942,6 +5002,17 @@ final class Controller: NSObject, NSApplicationDelegate {
         reader.read { [weak self] snapshot in
             guard let self else { return }
             self.latest = snapshot
+            if case let .ready(all) = snapshot {
+                /*
+                 * 先回りの提案を、**こちらから届ける。**
+                 *
+                 * 規則は前から発火していた。届く先が無かっただけで —— 提案は
+                 * 積まれ、画面と盤が取りに行くのを待っていた。見に行かなければ
+                 * 何も知らされない。期限を13日過ぎた課題が黙っていたのは、
+                 * 条件を直したあとは「発火している、届いていない」だった。
+                 */
+                self.notifier.deliver(all.suggestionList)
+            }
             if case .ready = snapshot {
                 self.everRead = true
             } else if !self.everRead {

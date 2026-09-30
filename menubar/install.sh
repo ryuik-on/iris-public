@@ -29,7 +29,7 @@ set -e
 cd "$(dirname "$0")"
 APP="$HOME/Applications/IRIS HUD.app"
 
-swiftc -O -o /tmp/iris-hud-build IrisMenuBar.swift Hotkeys.swift Ask.swift Travel.swift Rail.swift Shape.swift Schedule.swift Day.swift main.swift
+swiftc -O -o /tmp/iris-hud-build IrisMenuBar.swift Hotkeys.swift Ask.swift Travel.swift Rail.swift Shape.swift Schedule.swift Day.swift Notify.swift main.swift
 
 pkill -f "IRIS HUD" 2>/dev/null || true
 sleep 1
