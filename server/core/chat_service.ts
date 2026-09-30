@@ -1,4 +1,5 @@
 import { OPENED_BY_IRIS_NOTE } from './opener.js';
+import { describeApproval } from './approval_text.js';
 import { JarvisOrchestrator, StaleApprovalError, ReplyChannel, ReplyStream } from './orchestrator.js';
 import { ConversationTurn, OrchestratorResponse } from './types.js';
 import {
@@ -303,7 +304,10 @@ export function toApprovalView(record: PendingApprovalRecord, description = '') 
     toolName: record.toolName,
     args,
     riskLevel: record.riskLevel,
+    /** 道具の説明。**模型に向けた文**なので、画面では技術情報の中にだけ出す。 */
     description,
+    /** 人に聞く文（`approval_text.ts`）。画面の見出しと本文はこちら。 */
+    ...describeApproval(record.toolName, args),
     createdAt: record.createdAt,
   };
 }

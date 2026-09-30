@@ -1,3 +1,4 @@
+import { describeApproval } from './approval_text.js';
 import { AIProvider } from '../providers/base.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { SqliteApprovalStore } from '../services/approval_sqlite.js';
@@ -486,10 +487,13 @@ export class JarvisOrchestrator {
                 args: call.args,
                 riskLevel,
                 description: tool.description,
+                // 人に聞く文（見出し・本文・事実）。道具の説明は模型向けなので、
+                // 画面の本文には出さない（`approval_text.ts`）。
+                ...describeApproval(call.name, call.args),
                 // What this particular call does, when the tool can say. The
                 // description says what the tool is for; this says what is
                 // about to happen.
-                summary: tool.summarise?.(call.args),
+                summary: tool.summarise?.(call.args) ?? describeApproval(call.name, call.args).summary,
                 createdAt: new Date().toISOString(),
               },
               executedTools,

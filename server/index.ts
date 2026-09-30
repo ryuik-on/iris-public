@@ -46,6 +46,7 @@ import { DelegatedRunStore } from './services/delegated_runs.js';
 import { ProactiveRuleStore } from './services/proactive_rules_sqlite.js';
 import { ProactiveOpenerStore } from './services/proactive_openers_sqlite.js';
 import { openerFor, railLabel } from './core/opener.js';
+import { describeApproval } from './core/approval_text.js';
 import { nextExam, looksLikeExam } from './services/exam.js';
 import { type SessionUsageRead } from './services/session_usage.js';
 import { buildPrompt, tidyTitle } from './services/conversation_title.js';
@@ -1348,13 +1349,14 @@ app.get('/api/approvals/pending', (_req, res) => {
        * are agreeing to — which is the difference between offering an approval
        * button and offering a button.
        */
-      summary: (() => {
-        try {
-          const tool = defaultToolRegistry.get(record.toolName);
-          return tool?.summarise?.(JSON.parse(record.argsJson)) ?? null;
-        } catch {
-          return null;
-        }
+      ...(() => {
+        let args: any = {};
+        try { args = JSON.parse(record.argsJson); } catch { /* 読めない引数でも問いは出す */ }
+        // 人に聞く文（見出し・本文・事実）。道具が自分で要約できるならそれを優先する。
+        const human = describeApproval(record.toolName, args);
+        let own: string | null = null;
+        try { own = defaultToolRegistry.get(record.toolName)?.summarise?.(args) ?? null; } catch { own = null; }
+        return { ...human, summary: own ?? human.summary };
       })(),
       createdAt: record.createdAt,
     }));

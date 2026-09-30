@@ -85,6 +85,10 @@ export interface PendingApproval {
   description: string;
   /** What this particular call does, in a sentence, when the tool can say. */
   summary?: string;
+  /** 人に聞く問い（`approval_text.ts`）。画面の見出し。 */
+  heading?: string;
+  /** 判断に要る事実を人の言葉で。 */
+  facts?: Array<{ label: string; value: string }>;
   createdAt: string;
 }
 export interface OrchestratorResponse {

@@ -44,29 +44,6 @@ function LongText({ text }: { text: string }) {
   );
 }
 
-const ARG_LABELS: Record<string, string> = {
-  title: 'タイトル',
-  goal: '目的',
-  successCriteria: '完了の条件',
-  constraints: '守ること',
-  nonGoals: 'やらないこと',
-  relevantFiles: '関連ファイル',
-  scope: '範囲',
-  repo: 'リポジトリ',
-  agent: '担当',
-  message: '本文',
-  path: '場所',
-  content: '内容',
-  command: 'コマンド',
-  decision: '決定',
-  rationale: '理由',
-  key: '項目',
-  value: '値',
-  status: '状態',
-  reason: '理由',
-  note: '備考',
-};
-
 /**
  * The canvas, not the visible ring — the outer halo needs a margin of empty
  * canvas or it is clipped, and a clipped circle shows a flat chord. The ring
@@ -1856,61 +1833,37 @@ export default function App() {
           <div className="hud-panel rounded-[22px] w-full p-4 sm:p-5 flex flex-col gap-3 max-h-[min(48dvh,420px)]">
             <div className="flex items-center gap-2.5" style={{ color: 'var(--hud-pending)' }}>
               <ShieldAlert className="w-5 h-5" />
-              <h3 id="approval-heading" className="text-[15px] font-medium text-[var(--hud-text)]">{pendingApproval.toolName === 'create_development_task' ? '開発タスクを登録しますか？' : 'この操作を実行しますか？'}</h3>
+              <h3 id="approval-heading" className="text-[15px] font-medium text-[var(--hud-text)]">{(pendingApproval as any).heading ?? 'この操作を実行しますか？'}</h3>
             </div>
             <div className="space-y-3 overflow-y-auto hud-scroll min-h-0">
+              {/*
+                本文は**人に聞く文**（サーバの `approval_text.ts`）。道具の説明は模型に
+                向けた取扱説明で、「provenance は user / measured / … から選び」のような
+                文が承認する人の前に出ていた（利用者「人間が読む用の文章じゃない」、
+                2026-09-30）。説明と生の引数は技術情報の中にだけ置く。
+              */}
               <p className="text-[15px] text-[var(--hud-text)] leading-relaxed">
-                {(pendingApproval as any).summary
-                  || (pendingApproval.toolName === 'create_development_task' && pendingApproval.args?.title
-                    ? `「${pendingApproval.args.title}」を開発タスクとして登録します。作業はまだ開始しません。` : null)
-                  || pendingApproval.description
-                  || `${pendingApproval.toolName} を実行しようとしています。`}
+                {(pendingApproval as any).summary ?? `${pendingApproval.toolName} を実行しようとしています。`}
               </p>
-              {(pendingApproval as any).summary && pendingApproval.description && (
-                <p className="text-[12px] text-[var(--hud-muted)] leading-relaxed">
-                  {pendingApproval.description}
-                </p>
+              {Array.isArray((pendingApproval as any).facts) && (pendingApproval as any).facts.length > 0 && (
+                <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1.5 text-[13px]">
+                  {(pendingApproval as any).facts.map((f: { label: string; value: string }) => (
+                    <React.Fragment key={f.label}>
+                      <dt className="text-[var(--hud-muted)] whitespace-nowrap">{f.label}</dt>
+                      <dd className="text-[var(--hud-text)] leading-relaxed break-words min-w-0"><LongText text={f.value} /></dd>
+                    </React.Fragment>
+                  ))}
+                </dl>
               )}
-              <details className="border border-white/10">
-                <summary className="cursor-pointer px-3 py-2 hud-mono text-[11px] text-[var(--hud-muted)] hover:text-[var(--hud-text)]">
-                  詳細を見る
-                </summary>
-                <div className="divide-y divide-white/[0.06] border-t border-white/[0.06]">
-                {Object.entries(pendingApproval.args ?? {}).map(([key, value]) => (
-                  <div key={key} className="px-3 py-2">
-                    <div className="hud-mono text-[10px] text-[var(--hud-muted)] tracking-wide">
-                      {ARG_LABELS[key] ?? key}
-                    </div>
-                    <div className="mt-0.5 text-[13px] text-[var(--hud-text)] leading-relaxed break-words">
-                      {Array.isArray(value) ? (
-                        value.length === 0 ? (
-                          <span className="text-[var(--hud-muted)]">なし</span>
-                        ) : (
-                          <ul className="space-y-0.5">
-                            {value.map((item, i) => (
-                              <li key={i} className="flex gap-1.5">
-                                <span className="text-zinc-700">·</span>
-                                <span>{typeof item === 'string' ? item : JSON.stringify(item)}</span>
-                              </li>
-                            ))}
-                          </ul>
-                        )
-                      ) : typeof value === 'object' && value !== null ? (
-                        JSON.stringify(value)
-                      ) : String(value) === '' ? (
-                        <span className="text-[var(--hud-muted)]">なし</span>
-                      ) : (
-                        <LongText text={String(value)} />
-                      )}
-                    </div>
-                  </div>
-                ))}
-                </div>
-              </details>
               <details className="hud-mono text-[11px]">
                 <summary className="cursor-pointer text-[var(--hud-muted)] hover:text-zinc-400">
                   技術情報
                 </summary>
+                {pendingApproval.description && (
+                  <p className="mt-2 font-sans text-[12px] text-[var(--hud-muted)] leading-relaxed">
+                    <span className="hud-mono">{pendingApproval.toolName}</span>：{pendingApproval.description}
+                  </p>
+                )}
                 <pre className="mt-2 text-[var(--hud-muted)] overflow-x-auto p-2 bg-black/40 text-[11px] leading-relaxed">
                   {JSON.stringify({ tool: pendingApproval.toolName, risk: pendingApproval.riskLevel, args: pendingApproval.args }, null, 2)}
                 </pre>
