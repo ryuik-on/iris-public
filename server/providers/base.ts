@@ -1,6 +1,31 @@
 import { Tool, ConversationTurn } from '../core/types.js';
 import { TokenUsage } from '../core/usage.js';
 
+/**
+ * 模型に渡す前置き。**変わらない部分**と**呼ぶたびに変わる部分**を分けて持つ。
+ *
+ * 一つの文字列にしていたので、時刻や「◯秒前に観測」を含む状況の文が、
+ * 固定の指示と同じ塊に入っていた。プロンプトキャッシュは前置きが一字でも
+ * 違えば別物として扱うので、**毎回 2.6 万トークンを書き込み、一度も読めて
+ * いなかった**（実測 2026-09-30：Sonnet 5 は書き込み 96.6 万・読み出し 1.4 万、
+ * Haiku 4.5 は 66 万・0）。書き込みは入力の 1.25 倍なので、キャッシュを
+ * 切っていた方が安かった（$5.17 に対して $4.32）。
+ *
+ * 分けて渡せば、キャッシュの区切りを固定部分だけに付けられる。区切りを
+ * 付けられない提供者は `flattenSystem` で一つにする —— そのときも**固定部分を
+ * 先に置く**ので、前方一致の自動キャッシュ（Gemini・OpenAI）にも効く。
+ */
+export interface SystemPrompt {
+  stable: string;
+  volatile: string;
+}
+export type SystemInput = string | SystemPrompt;
+
+export function flattenSystem(system: SystemInput): string {
+  if (typeof system === 'string') return system;
+  return [system.stable, system.volatile].filter((s) => s && s.trim()).join('\n\n');
+}
+
 export interface AIProviderResponse {
   content: string;
   toolCalls?: Array<{
@@ -45,7 +70,7 @@ export interface AIProvider {
   generateResponse(
     messages: ConversationTurn[],
     tools: Tool[],
-    systemInstruction: string,
+    systemInstruction: SystemInput,
     /** Cancels the in-flight request when a timeout or run deadline fires. */
     signal?: AbortSignal,
     /**

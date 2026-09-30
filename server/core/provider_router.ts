@@ -1,4 +1,4 @@
-import { AIProvider, AIProviderResponse } from '../providers/base.js';
+import { AIProvider, AIProviderResponse, SystemInput } from '../providers/base.js';
 import { Tool, ConversationTurn } from '../core/types.js';
 import { classifyProviderError, ClassifiedProviderError, ProviderErrorKind } from './provider_errors.js';
 
@@ -246,7 +246,7 @@ export class ProviderRouter implements AIProvider {
   async generateResponse(
     messages: ConversationTurn[],
     tools: Tool[],
-    systemInstruction: string,
+    systemInstruction: SystemInput,
     signal?: AbortSignal,
     /**
      * Forwarded, because this class is what the orchestrator holds.

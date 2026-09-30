@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { AIProvider, AIProviderResponse } from './base.js';
+import { AIProvider, AIProviderResponse, SystemInput } from './base.js';
 import { Tool, ConversationTurn } from '../core/types.js';
 
 /**
@@ -16,17 +16,21 @@ import { Tool, ConversationTurn } from '../core/types.js';
  *
  * Prompt caching uses two breakpoints, because they serve different reuse:
  *
- *   1. after the system prompt — covers tools + system, which are byte-identical
- *      for every request IRIS ever makes, including the first turn of a brand
- *      new conversation. Measured traffic runs ~61:1 input to output, and this
+ *   1. after the stable part of the system prompt — covers tools + the fixed
+ *      instructions, which are byte-identical for every request IRIS ever
+ *      makes, including the first turn of a brand new conversation. Measured traffic runs ~61:1 input to output, and this
  *      prefix is most of that input, so it is where the money is.
  *   2. auto-placed at the end of messages — covers the conversation so far, so a
  *      tool loop's second call reads what its first call just wrote, and each
  *      new turn reads the whole prior thread.
  *
- * Caching is a prefix match, so the prefix must be byte-stable: the system
- * instruction is a constant (no interpolated timestamp), and tools are sorted
- * by name so registration order can never reshuffle the prefix.
+ * Caching is a prefix match, so the prefix must be byte-stable: tools are
+ * sorted by name so registration order can never reshuffle the prefix.
+ *
+ * この段落は以前「system は定数で、時刻は差し込まない」と書いていた。**実際には
+ * 時刻と状況の文が同じ塊に入っていて、一度もキャッシュが読めていなかった**
+ * （実測 2026-09-30、`base.ts` の `SystemPrompt`）。いまは変わる部分を区切りの
+ * 後ろの別の塊にしている。
  */
 
 export const DEFAULT_ANTHROPIC_MODEL = 'claude-opus-5';
@@ -77,9 +81,12 @@ export class AnthropicProvider implements AIProvider {
   async generateResponse(
     messages: ConversationTurn[],
     tools: Tool[],
-    systemInstruction: string,
+    systemInstruction: SystemInput,
     signal?: AbortSignal
   ): Promise<AIProviderResponse> {
+    const system = typeof systemInstruction === 'string'
+      ? { stable: systemInstruction, volatile: '' }
+      : systemInstruction;
     // Sorted so the rendered prefix cannot change if registration order does.
     const formattedTools = [...tools]
       .sort((a, b) => a.name.localeCompare(b.name))
@@ -133,12 +140,18 @@ export class AnthropicProvider implements AIProvider {
         model: this.currentModel,
         // Breakpoint 1: tools render before system, so marking the last system
         // block caches both together.
+        /*
+         * 区切りは**固定部分にだけ**付ける。時刻や状況の文（毎回変わる）を同じ
+         * 塊に入れていたので、道具一覧まで巻き込んで毎回書き直しになっていた
+         * （`base.ts` の `SystemPrompt`）。変わる部分は区切りの後ろに置く。
+         */
         system: [
           {
             type: 'text',
-            text: systemInstruction,
+            text: system.stable,
             ...(this.cacheEnabled ? { cache_control: { type: 'ephemeral' } } : {}),
           },
+          ...(system.volatile.trim() ? [{ type: 'text', text: system.volatile }] : []),
         ],
         max_tokens: this.maxTokens,
         /*

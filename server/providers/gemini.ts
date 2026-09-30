@@ -1,5 +1,5 @@
 import { GoogleGenAI } from '@google/genai';
-import { AIProvider, AIProviderResponse } from './base.js';
+import { AIProvider, AIProviderResponse, SystemInput, flattenSystem } from './base.js';
 import { Tool, ConversationTurn } from '../core/types.js';
 import { toGeminiSchema } from './gemini_schema.js';
 
@@ -36,7 +36,7 @@ export class GeminiProvider implements AIProvider {
 
   setModel(modelName: string) { this.currentModel = modelName; }
 
-  async generateResponse(messages: ConversationTurn[], tools: Tool[], systemInstruction: string, signal?: AbortSignal, onDelta?: (text: string) => void): Promise<AIProviderResponse> {
+  async generateResponse(messages: ConversationTurn[], tools: Tool[], systemInstruction: SystemInput, signal?: AbortSignal, onDelta?: (text: string) => void): Promise<AIProviderResponse> {
     /**
      * Schemas are rewritten rather than passed through.
      *
@@ -178,7 +178,8 @@ export class GeminiProvider implements AIProvider {
       model: this.currentModel,
       contents,
       config: {
-        systemInstruction: { parts: [{ text: systemInstruction }] },
+        // 固定部分が先。前方一致の暗黙キャッシュが効くように。
+        systemInstruction: { parts: [{ text: flattenSystem(systemInstruction) }] },
         tools: functionDeclarations.length > 0 ? [{ functionDeclarations }] : undefined,
         // The SDK honours this, so a timeout cancels the HTTP request rather
         // than leaving it running and billable in the background.

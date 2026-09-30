@@ -1,5 +1,5 @@
 import { describeApproval } from './approval_text.js';
-import { AIProvider } from '../providers/base.js';
+import { AIProvider, SystemPrompt } from '../providers/base.js';
 import { ToolRegistry } from '../tools/registry.js';
 import { SqliteApprovalStore } from '../services/approval_sqlite.js';
 import { RiskLevel, OrchestratorResponse, ConversationTurn } from './types.js';
@@ -178,8 +178,7 @@ export class JarvisOrchestrator {
      * 実測（最初の言葉が出るまで、2026-09-11）：Haiku 4.5 が 0.91〜1.10秒、
      * Sonnet 5 が 1.50秒、いまの Gemini flash が 2.57秒。
      *
-     * `channel` は既にここまで届いていた（`callProvider` の引数）ので、
-     * 継ぎ目はここ。無ければ既定の相手をそのまま使う。
+     * `channel` は既に走り（`runLoop`）まで届いていたので、継ぎ目はここ。無ければ既定の相手をそのまま使う。
      */
     private providerFor?: (channel: ReplyChannel) => AIProvider | undefined
   ) {}
@@ -323,6 +322,8 @@ export class JarvisOrchestrator {
      * ないので、ここで決めて最後まで使う。
      */
     const provider = this.providerFor?.(channel) ?? this.provider;
+    // 前置きも走りの頭で一度だけ。道具の往復で作り直すとキャッシュが読めない。
+    const system = this.systemInstruction(channel);
     const deadline = new Deadline(CONFIG.runDeadlineMs, 'orchestrator run');
     let loopCount = 0;
     // A run can span several provider calls (one per tool round trip), so cost
@@ -346,7 +347,7 @@ export class JarvisOrchestrator {
         }
 
         stream?.phase('thinking');
-        const response = await this.callProvider(provider, history, availableTools, deadline, channel, stream);
+        const response = await this.callProvider(provider, history, availableTools, deadline, system, stream);
         providerCalls++;
         const servedModel = response.servedModel ?? provider.currentModel;
         const bucket = byModel.get(servedModel) ?? {
@@ -538,7 +539,18 @@ export class JarvisOrchestrator {
     }
   }
 
-  private systemInstruction(channel: ReplyChannel): string {
+  /**
+   * 前置きを、変わらない部分と変わる部分に分けて組む。
+   *
+   * 固定の指示（と声のときの話し方）は毎回同じなので、提供者がキャッシュ
+   * できる。時刻・状況・記憶は呼ぶたびに変わるので、**その後ろに別に置く。**
+   * 一つの文字列にしていたせいで、固定部分まで毎回書き直しになっていた
+   * （`providers/base.ts` の `SystemPrompt`）。
+   *
+   * **一回の走りに一度だけ呼ぶ。**道具の往復のたびに作り直すと、状況の文の
+   * 「◯秒前」が進んで、二回目の呼び出しが一回目の書き込みを読めない。
+   */
+  private systemInstruction(channel: ReplyChannel): SystemPrompt {
     let rendered = '';
     try {
       rendered = this.situation?.() ?? '';
@@ -547,10 +559,9 @@ export class JarvisOrchestrator {
       // stop the user from being answered.
       rendered = '';
     }
-    const parts = [CONFIG.systemInstruction];
-    if (rendered) parts.push(rendered);
-    if (channel === 'voice') parts.push(CONFIG.spokenInstruction);
-    return parts.join('\n\n');
+    const stable = [CONFIG.systemInstruction];
+    if (channel === 'voice') stable.push(CONFIG.spokenInstruction);
+    return { stable: stable.join('\n\n'), volatile: rendered };
   }
 
   /**
@@ -563,7 +574,7 @@ export class JarvisOrchestrator {
     history: ConversationTurn[],
     availableTools: any[],
     deadline: Deadline,
-    channel: ReplyChannel = 'text',
+    system: SystemPrompt,
     stream?: ReplyStream
   ) {
     /**
@@ -593,7 +604,7 @@ export class JarvisOrchestrator {
             return provider.generateResponse(
               history,
               availableTools,
-              this.systemInstruction(channel),
+              system,
               signal,
               forward
             );
