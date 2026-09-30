@@ -177,6 +177,27 @@ const TASK_FROM_URL: string | null = (() => {
   }
 })();
 
+/**
+ * 開く会話。盤のレールの「IRIS から」を押すと `?conversation=<id>` で来る。
+ *
+ * 読んだら URL から消す。**残すと、再読み込みのたびにその会話へ戻される。**
+ * `task` と同じく部品の外で一度だけ読む（組み直しで二度目が空になるので）。
+ */
+const CONVERSATION_FROM_URL: string | null = (() => {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const id = params.get('conversation');
+    if (id) {
+      params.delete('conversation');
+      const rest = params.toString();
+      window.history.replaceState(null, '', window.location.pathname + (rest ? `?${rest}` : ''));
+    }
+    return id;
+  } catch {
+    return null;
+  }
+})();
+
 export default function App() {
   const [theme, setTheme] = useState<'mist' | 'night'>(() => {
     try { return localStorage.getItem('iris-theme') === 'night' ? 'night' : 'mist'; }
@@ -412,7 +433,26 @@ export default function App() {
     let cancelled = false;
     (async () => {
       try {
-        const view = await fetchRecentConversation();
+        /*
+         * 頼まれた会話があればそれを。消えていたら（404）いつもどおり直近へ。
+         * **開けなかったことを、別の会話を黙って出してごまかさない** —— 直近を
+         * 出すのは同じだが、頼まれたものが無かったことは上に出す。
+         */
+        let view = null as Awaited<ReturnType<typeof fetchRecentConversation>> | null;
+        if (CONVERSATION_FROM_URL) {
+          try {
+            view = await fetchConversation(CONVERSATION_FROM_URL);
+            try {
+              const seen = new Set(JSON.parse(localStorage.getItem('iris-openers-seen') ?? '[]'));
+              seen.add(CONVERSATION_FROM_URL);
+              localStorage.setItem('iris-openers-seen', JSON.stringify([...seen].slice(-100)));
+            } catch { /* 覚えられなくても開ける */ }
+          } catch (err: any) {
+            if (err?.status === 401) throw err;
+            setError('頼まれた会話が見つかりませんでした（消されたかもしれません）。直近の会話を出しています。');
+          }
+        }
+        if (!view) view = await fetchRecentConversation();
         if (cancelled) return;
         if (view.conversation) {
           setConversationId(view.conversation.id);

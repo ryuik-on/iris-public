@@ -91,6 +91,24 @@ export function openerFor(suggestion: ProactiveSuggestion, at: Date = new Date()
 }
 
 /**
+ * レールに出す二文字。
+ *
+ * レールの幅は 52 ポイントで、題は入らない。**入らないものを縮めて入れると、
+ * 読めない字が並ぶだけで読めた気にさせる**（`Rail.swift` の予定の段と同じ理由）。
+ * 何の話かが分かる語を一つ。中身は押した先の会話にある。
+ */
+const LABELS: Record<string, string> = {
+  'watch.deadline-pressing': '期限',
+  'watch.lectures-divergent': '講義',
+  'watch.lectures-new-version': '講義',
+  'watch.grant-dead': '認可',
+  'watch.delegation-finished': '委任',
+};
+export function railLabel(ruleId: string): string {
+  return LABELS[ruleId] ?? '話';
+}
+
+/**
  * 会話の最初が IRIS の発言のときに、模型へ渡す履歴の頭に置く一行。
  *
  * 提供者の多くは**最初の発言が利用者であること**を求める（Anthropic は

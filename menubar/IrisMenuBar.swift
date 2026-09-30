@@ -194,6 +194,22 @@ struct SuggestionBecause: Decodable {
 
 struct Proactive: Decodable {
     let pending: [Suggestion]
+    /// 返事を待っている、IRIS から始めた会話。古いサーバは返さない。
+    let openers: [OpenerRef]?
+}
+
+/**
+ * IRIS から話しかけた会話への手がかり。レールに印を出し、押せばその会話を開く。
+ *
+ * 中身（文面）は持たない。**レールには入らないし、入れると読めた気にさせる。**
+ * 話は押した先の会話で読む。
+ */
+struct OpenerRef: Decodable {
+    let conversationId: String
+    let ruleId: String
+    let title: String?
+    /// レールに出す二文字（`期限` など）。サーバが決める。
+    let label: String
 }
 
 struct CalendarEvent: Decodable {
@@ -605,6 +621,8 @@ struct Everything {
      * 声をかけるようになって、**何を言うか**が要るようになった。
      */
     let suggestionList: [Suggestion]
+    /// 返事を待っている、IRIS から始めた会話。新しい順。
+    let openers: [OpenerRef]
     /**
      * Everything in range, not only the next one.
      *
@@ -768,6 +786,7 @@ final class Reader {
                                         // 数えるだけでなく、**中身を持ち歩く。**
                                         // IRIS の側から声をかけるのに要る。
                                         suggestionList: proactive?.pending ?? [],
+                                        openers: proactive?.openers ?? [],
                                         events: calendar?.events ?? [],
                                         budget: budget,
                                         sessions: sessions?.sessions ?? [],
@@ -5805,7 +5824,7 @@ extension Controller: NSMenuDelegate {
         guard case let .ready(all) = snapshot else {
             // 届かない往復でも、空模様は消さない。**消えるのは古くなったとき。**
             return RailHead(
-                sky: lastSky, working: false, detail: [], plans: [], nextPlan: nil
+                sky: lastSky, working: false, detail: [], plans: [], nextPlan: nil, speak: nil
             )
         }
         let events = plans(all.events)
@@ -5816,7 +5835,14 @@ extension Controller: NSMenuDelegate {
             working: all.runs.contains { $0.state == "running" },
             detail: weatherDetail(all.weather),
             plans: events.isEmpty ? ["この先の予定はありません。"] : events.map { $0.line },
-            nextPlan: events.first?.clock
+            nextPlan: events.first?.clock,
+            /*
+             * IRIS から話しかけて、まだ返事の無いもの。**一番新しい一件**を押す先にする。
+             * 数は添える —— 二件あるのに一件に見えると、残りに気づかない。
+             */
+            speak: all.openers.first.map {
+                RailSpeak(label: $0.label, conversationId: $0.conversationId, count: all.openers.count)
+            }
         )
     }
 
@@ -6036,6 +6062,15 @@ extension Controller: NSMenuDelegate {
         }
         let panel = Rail()
         panel.onHead = { [weak self] in self?.openIris() }
+        /*
+         * IRIS から話しかけた会話を開く。机の IRIS に URL を渡すので、開いている
+         * 窓がそのまま使われる（`openInIris`）。
+         */
+        panel.onSpeak = { id in
+            let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
+            guard let url = URL(string: "http://127.0.0.1:3002/?conversation=\(escaped)") else { return }
+            openInIris(url)
+        }
         panel.onReload = { [weak self] in self?.refreshUsage() }
         panel.onBoard = { [weak self] in self?.toggleBoard() }
         /**

@@ -45,7 +45,7 @@ import { startRepoBackup, repoBackupReading, backUpRepository } from './services
 import { DelegatedRunStore } from './services/delegated_runs.js';
 import { ProactiveRuleStore } from './services/proactive_rules_sqlite.js';
 import { ProactiveOpenerStore } from './services/proactive_openers_sqlite.js';
-import { openerFor } from './core/opener.js';
+import { openerFor, railLabel } from './core/opener.js';
 import { nextExam, looksLikeExam } from './services/exam.js';
 import { type SessionUsageRead } from './services/session_usage.js';
 import { buildPrompt, tidyTitle } from './services/conversation_title.js';
@@ -4560,6 +4560,13 @@ app.get('/api/proactive', (_req, res) => {
   res.json({
     rules: proactive.listRules(),
     pending: proactive.listPending(),
+    /**
+     * 返事を待っている、IRIS から始めた会話。盤のレールがこれを読んで印を出す。
+     * 盤は一本の巡回でこの口を読んでいるので、別の口を足さずにここへ載せる。
+     */
+    openers: proactiveOpeners.recent(20)
+      .filter((o) => !o.replied)
+      .map((o) => ({ conversationId: o.conversationId, ruleId: o.ruleId, title: o.title, label: railLabel(o.ruleId), createdAt: o.createdAt })),
     note:
       '提案は提案であり、実行ではありません。受理して起動した対話は origin=inferred として扱われ、' +
       'EXTERNAL_ACTION と DESTRUCTIVE のツールには到達できません。',

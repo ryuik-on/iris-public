@@ -115,6 +115,22 @@ struct RailHead {
      */
     let plans: [String]
     let nextPlan: String?
+    /**
+     * IRIS から話しかけて、返事を待っているもの。無ければ段ごと出さない。
+     *
+     * 「期限が迫っている課題がある」をレールに文字で出すことも考えたが、
+     * 利用者の望みは**文字で知らされることではなく、IRIS と話すこと**
+     * （2026-09-30）。だからここは知らせるだけの印で、押すとその会話が開く。
+     */
+    let speak: RailSpeak?
+}
+
+struct RailSpeak {
+    /// `期限` など、何の話かを言う語。
+    let label: String
+    let conversationId: String
+    /// 返事を待っている話の数。
+    let count: Int
 }
 
 struct RailWindow {
@@ -274,7 +290,8 @@ final class RailView: NSView {
         Self.headHeight(
             head: head != nil,
             sky: !(head?.sky.isEmpty ?? true),
-            plan: head?.nextPlan != nil
+            plan: head?.nextPlan != nil,
+            speak: head?.speak != nil
         )
     }
 
@@ -293,8 +310,10 @@ final class RailView: NSView {
 
     private var skyTop: CGFloat { Self.flare + Self.headPad }
     private var planTop: CGFloat { skyTop + ((head?.sky.isEmpty ?? true) ? 0 : Self.row) }
-    /// 印の区画の上端。天気と時計の下。
-    private var coreTop: CGFloat { planTop + (head?.nextPlan != nil ? Self.row : 0) }
+    /// IRIS から話がある、の段。予定の下、印の上。
+    private var speakTop: CGFloat { planTop + (head?.nextPlan != nil ? Self.row : 0) }
+    /// 印の区画の上端。天気・時計・話の下。
+    private var coreTop: CGFloat { speakTop + (head?.speak != nil ? Self.row : 0) }
 
 
     /**
@@ -318,14 +337,14 @@ final class RailView: NSView {
     static let flare: CGFloat = 22
 
     /// 中身の高さ。窓の大きさを決めるのも、当たり判定も、これ一つから引く。
-    static func headHeight(head: Bool, sky: Bool, plan: Bool = false) -> CGFloat {
+    static func headHeight(head: Bool, sky: Bool, plan: Bool = false, speak: Bool = false) -> CGFloat {
         guard head else { return 0 }
-        return headPad + (sky ? row : 0) + (plan ? row : 0) + coreRow
+        return headPad + (sky ? row : 0) + (plan ? row : 0) + (speak ? row : 0) + coreRow
     }
 
-    static func contentHeight(entries: Int, head: Bool, sky: Bool, plan: Bool = false) -> CGFloat {
+    static func contentHeight(entries: Int, head: Bool, sky: Bool, plan: Bool = false, speak: Bool = false) -> CGFloat {
         let lanes: CGFloat = CGFloat(entries) * itemHeight
-        let top: CGFloat = headHeight(head: head, sky: sky, plan: plan)
+        let top: CGFloat = headHeight(head: head, sky: sky, plan: plan, speak: speak)
         return 6 + top + lanes + reloadHeight + 6
     }
 
@@ -375,6 +394,8 @@ final class RailView: NSView {
 
     /// 頭の IRIS 印を押したとき。ダッシュボードではなく IRIS そのものを開く。
     var onHead: (() -> Void)?
+    /// 「IRIS から」の段を押したとき。その会話を開く。
+    var onSpeak: ((String) -> Void)?
     /// 輪を二度押したとき。その道具のアプリを前に出す。
     var onOpenApp: ((String) -> Void)?
 
@@ -429,7 +450,8 @@ final class RailView: NSView {
         // 上から天気、予定、そのあとが印。無いものは押せない。
         if let head {
             if !head.sky.isEmpty, local.y < planTop { onSelect?(-1); return }
-            if head.nextPlan != nil, local.y < coreTop { onSelect?(-2); return }
+            if head.nextPlan != nil, local.y < speakTop { onSelect?(-2); return }
+            if let speak = head.speak, local.y < coreTop { onSpeak?(speak.conversationId); return }
             if local.y < Self.flare + headHeight { onHead?(); return }
         }
         let lanesEnd = Self.flare + 6 + headHeight + CGFloat(entries.count) * Self.itemHeight
@@ -609,6 +631,23 @@ final class RailView: NSView {
         if let next = head.nextPlan {
             centred("◷", y: planTop + 2, size: 14, colour: Ink.label)
             centred(next, y: planTop + 22, size: 11, colour: Ink.aside, weight: .medium)
+        }
+
+        /**
+         * IRIS から話がある。印は IRIS の色で、**レールで唯一こちらから呼んでいる段。**
+         *
+         * 文面は出さない（入らない）。何の話かの語と、二件以上なら数。
+         * 押すとその会話が開く。
+         */
+        if let speak = head.speak {
+            if let icon = Sky.image("text.bubble.fill", size: 15, weight: .regular, colour: Ink.iris) {
+                icon.draw(in: NSRect(
+                    x: (bounds.width - icon.size.width) / 2, y: speakTop + 4,
+                    width: icon.size.width, height: icon.size.height
+                ))
+            }
+            let word = speak.count > 1 ? "\(speak.label) \(speak.count)" : speak.label
+            centred(word, y: speakTop + 22, size: 11, colour: Ink.iris, weight: .semibold)
         }
 
     }
@@ -1132,6 +1171,12 @@ final class Rail: NSPanel {
         set { view.onHead = newValue }
     }
 
+    /// 「IRIS から」の段を押したとき。
+    var onSpeak: ((String) -> Void)? {
+        get { view.onSpeak }
+        set { view.onSpeak = newValue }
+    }
+
     /// 輪を二度押したとき。
     var onOpenApp: ((String) -> Void)? {
         get { view.onOpenApp }
@@ -1165,7 +1210,8 @@ final class Rail: NSPanel {
             entries: entries.count,
             head: head != nil,
             sky: !(head?.sky.isEmpty ?? true),
-            plan: head?.nextPlan != nil
+            plan: head?.nextPlan != nil,
+            speak: head?.speak != nil
         ) + RailView.flare * 2
         /**
          * 右辺の、覚えている高さ。無ければ縦中央。
@@ -1275,7 +1321,8 @@ final class Rail: NSPanel {
         let headPart = RailView.headHeight(
             head: view.head != nil,
             sky: !(view.head?.sky.isEmpty ?? true),
-            plan: view.head?.nextPlan != nil
+            plan: view.head?.nextPlan != nil,
+            speak: view.head?.speak != nil
         )
         let top: CGFloat
         if index < 0 {
