@@ -629,7 +629,19 @@ export default function App() {
   }, []);
 
   const openConversation = async (id: string) => {
-    if (loading || id === conversationId) return;
+    /*
+     * **押して何も起きない、を作らない。**
+     *
+     * 返事を待っているあいだは黙って戻っていたので、右上の「承認待ち」を
+     * 押しても何も切り替わらなかった（利用者、2026-09-30）。いまの会話の
+     * 返事が流れている途中で別の会話へ移ると、流れてきた文が行き場を失うので
+     * 移らないのは正しいが、**移らない理由は言う。**
+     */
+    if (id === conversationId) { setReadingClosed(false); return; }
+    if (loading) {
+      setError('いまの返事を待っているあいだは、ほかの会話へ移れません。返事が出てから、もう一度押してください。');
+      return;
+    }
     setError(null);
     try {
       const view = await fetchConversation(id);
