@@ -44,6 +44,8 @@ import { refreshAllowance, allowanceRefreshState, PROBE_PROMPT } from './service
 import { startRepoBackup, repoBackupReading, backUpRepository } from './services/repo_backup.js';
 import { DelegatedRunStore } from './services/delegated_runs.js';
 import { ProactiveRuleStore } from './services/proactive_rules_sqlite.js';
+import { ProactiveOpenerStore } from './services/proactive_openers_sqlite.js';
+import { openerFor } from './core/opener.js';
 import { nextExam, looksLikeExam } from './services/exam.js';
 import { type SessionUsageRead } from './services/session_usage.js';
 import { buildPrompt, tidyTitle } from './services/conversation_title.js';
@@ -2762,8 +2764,62 @@ pruneTimer.unref();
  * irreversible tool by the orchestrator rather than by this configuration.
  */
 const proactive = new ProactiveService(context, {
-  onEvent: ({ type, detail }) => activityLog.log({ level: 'info', event: type, detail }),
+  onEvent: ({ type, detail }) => {
+    activityLog.log({ level: 'info', event: type, detail });
+    if (type === 'proactive.suggested' && detail?.suggestionId) speakFirst(String(detail.suggestionId));
+  },
 });
+
+/**
+ * 提案が出たら、IRIS の一言で会話を一本開く。
+ *
+ * 「そもそも IRIS 側から俺に聞いて欲しい」「IRIS との会話みたいな形が理想」
+ * （利用者、2026-09-30）。文面の組み方と「二度言わない」の鍵は
+ * `server/core/opener.ts`。
+ *
+ * **返事を待っている同じ規則の話が 24 時間以内にあれば、重ねて開かない。**
+ * 根拠が少し変わっただけで二本目を開くと、返事をしていないあいだに同じ話の
+ * 会話が積もっていく。答えてもらえれば、次に規則が発火したときにまた話す。
+ */
+const proactiveOpeners = new ProactiveOpenerStore(db);
+function speakFirst(suggestionId: string): void {
+  try {
+    const suggestion = proactive.listPending().find((s) => s.id === suggestionId);
+    if (!suggestion) return;
+    const now = new Date();
+    const opener = openerFor(suggestion, now);
+    if (proactiveOpeners.has(opener.key)) return;
+    const waiting = proactiveOpeners
+      .recent(50)
+      .find((o) => o.ruleId === suggestion.ruleId && !o.replied && now.getTime() - Date.parse(o.createdAt) < 24 * 3_600_000);
+    if (waiting) {
+      activityLog.log({
+        level: 'info', event: 'proactive.opener_held',
+        detail: { ruleId: suggestion.ruleId, waitingOn: waiting.conversationId },
+      });
+      return;
+    }
+    const conversation = conversationStore.createConversation(opener.title);
+    conversationStore.addMessage(conversation.id, 'assistant', opener.text);
+    proactiveOpeners.record({
+      key: opener.key,
+      conversationId: conversation.id,
+      ruleId: suggestion.ruleId,
+      suggestionId: suggestion.id,
+      createdAt: now.toISOString(),
+    });
+    activityLog.log({
+      level: 'info', event: 'proactive.opened',
+      detail: { ruleId: suggestion.ruleId, suggestionId: suggestion.id, conversationId: conversation.id },
+    });
+  } catch (err: any) {
+    // 話しかけられなかったことは記録に残す。**黙って落とさない。**
+    activityLog.log({
+      level: 'warn', event: 'proactive.open_failed',
+      detail: { suggestionId, message: err?.message ?? String(err) },
+    });
+  }
+}
 
 /**
  * 規則を残す口と、起動時に読み戻す。
@@ -4508,6 +4564,20 @@ app.get('/api/proactive', (_req, res) => {
       '提案は提案であり、実行ではありません。受理して起動した対話は origin=inferred として扱われ、' +
       'EXTERNAL_ACTION と DESTRUCTIVE のツールには到達できません。',
   });
+});
+
+/**
+ * IRIS が先に話しかけた会話。新しい順に、返事があったかどうかを添えて。
+ *
+ * 画面はこれを見て、返事を待っている話があれば会話を開く（手が空いていれば）
+ * か、入力欄の上に知らせを出す（打っている途中なら）。
+ */
+app.get('/api/proactive/openers', (_req, res) => {
+  try {
+    res.json({ openers: proactiveOpeners.recent(20) });
+  } catch (err) {
+    handleError(res, err, 'proactive.openers_failed');
+  }
 });
 
 app.post('/api/proactive/rules', (req, res) => {

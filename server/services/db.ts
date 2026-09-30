@@ -1248,6 +1248,32 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 32,
+    name: 'proactive_openers',
+    /**
+     * IRIS が先に話しかけた会話の控え（`server/core/opener.ts`）。
+     *
+     * 規則の冷却は記憶の中にしか無く、再起動で消える。消えるたびに同じ提案が
+     * 出て、**同じ話で会話がもう一本開く。**鍵（規則・日付・根拠）で一度きりに
+     * する。
+     *
+     * 会話への外部鍵は張らない。利用者が会話を消したら、**それは「要らない」
+     * という返事**で、控えまで消えると同じ日に同じ話をもう一度始めてしまう。
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS proactive_openers (
+          key TEXT PRIMARY KEY,
+          conversation_id TEXT NOT NULL,
+          rule_id TEXT NOT NULL,
+          suggestion_id TEXT NOT NULL,
+          created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS proactive_openers_created ON proactive_openers (created_at);
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

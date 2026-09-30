@@ -1,3 +1,4 @@
+import { OPENED_BY_IRIS_NOTE } from './opener.js';
 import { JarvisOrchestrator, StaleApprovalError, ReplyChannel, ReplyStream } from './orchestrator.js';
 import { ConversationTurn, OrchestratorResponse } from './types.js';
 import {
@@ -274,7 +275,16 @@ export class ChatService {
   }
 
   private toTurns(messages: StoredConversationMessage[]): ConversationTurn[] {
-    return messages.map((m) => ({ role: m.role, content: m.content }));
+    const turns: ConversationTurn[] = messages.map((m) => ({ role: m.role, content: m.content }));
+    /*
+     * IRIS が先に話しかけた会話（`opener.ts`）は、最初が assistant になる。
+     * 提供者は最初の発言が利用者であることを求めるので、**何が起きたかを
+     * そのまま書いた注記**を頭に置く。利用者の口に言っていないことは入れない。
+     */
+    if (turns.length > 0 && turns[0].role === 'assistant') {
+      turns.unshift({ role: 'user', content: OPENED_BY_IRIS_NOTE });
+    }
+    return turns;
   }
 }
 

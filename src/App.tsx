@@ -110,6 +110,8 @@ import {
   fetchContext,
   fetchSpeechStatus,
   fetchPendingApprovals,
+  fetchOpeners,
+  OpenerView,
   fetchRouting,
   fetchTts,
   fetchProactive,
@@ -623,6 +625,81 @@ export default function App() {
       setError(err.message);
     }
   };
+
+  /**
+   * IRIS から話しかけられたとき。
+   *
+   * 「そもそも IRIS 側から俺に聞いて欲しい」「IRIS との会話みたいな形が理想」
+   * （利用者、2026-09-30）。サーバは提案が出ると IRIS の一言で会話を一本開く
+   * （`server/core/opener.ts`）。ここはそれを**画面に出す側。**
+   *
+   * **手が空いていれば、その会話に切り替える。**打っている途中・返事を
+   * 待っている途中・承認の途中・この一分に触っていたときは、切り替えずに
+   * 入力欄の上に知らせを出す —— 読んでいるものを横から奪わない。
+   *
+   * 一度出したものは覚えておく（この端末で）。**同じ話で二度画面を奪わない。**
+   */
+  const [incoming, setIncoming] = useState<OpenerView | null>(null);
+  const lastTouched = useRef(Date.now());
+  const busy = useRef(false);
+  busy.current = loading || sending || streamText !== null || input.trim().length > 0 || !!pendingApproval;
+  const openRef = useRef(openConversation);
+  openRef.current = openConversation;
+  const speakRef = useRef(speakReplies);
+  speakRef.current = speakReplies;
+  const SEEN_KEY = 'iris-openers-seen';
+  const seenOpeners = (): Set<string> => {
+    try { return new Set(JSON.parse(localStorage.getItem(SEEN_KEY) ?? '[]')); } catch { return new Set(); }
+  };
+  const markOpenerSeen = (conversationId: string) => {
+    try {
+      const seen = [...seenOpeners(), conversationId].slice(-100);
+      localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
+    } catch { /* 覚えられなくても出すことはできる。次にもう一度出るだけ。 */ }
+  };
+  useEffect(() => {
+    const touch = () => { lastTouched.current = Date.now(); };
+    window.addEventListener('keydown', touch);
+    window.addEventListener('pointerdown', touch);
+    return () => {
+      window.removeEventListener('keydown', touch);
+      window.removeEventListener('pointerdown', touch);
+    };
+  }, []);
+  useEffect(() => {
+    if (restoring) return;
+    let cancelled = false;
+    let first = true;
+    const load = () => {
+      fetchOpeners()
+        .then(({ openers }) => {
+          if (cancelled) return;
+          const seen = seenOpeners();
+          const fresh = openers.find((o) => !o.replied && !seen.has(o.conversationId));
+          if (!fresh) { setIncoming(null); return; }
+          /*
+           * 開いた直後は、まだ何も始めていないので空いているとみなす。
+           * 以降は、この一分に触っていなければ空いている。
+           */
+          const idle = !busy.current && (first || Date.now() - lastTouched.current > 60_000);
+          if (idle) {
+            markOpenerSeen(fresh.conversationId);
+            setIncoming(null);
+            void openRef.current(fresh.conversationId);
+            if (speakRef.current && fresh.text) void speakText(fresh.text).catch(() => {});
+          } else {
+            setIncoming(fresh);
+          }
+        })
+        // 取れなくても会話は使える。**知らせが出ないだけで、話は消えていない**（履歴に残っている）。
+        .catch(() => {})
+        .finally(() => { first = false; });
+    };
+    load();
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoring]);
 
   /**
    * 履歴を一件消す。
@@ -1640,6 +1717,15 @@ export default function App() {
               style={{ paddingTop: 28, paddingBottom: 28 }}
             >
               <div className="mx-auto max-w-[720px] flex flex-col gap-5">
+                {/*
+                  最初が IRIS の発言なら、**誰が話しかけたのか**を一行で言う。
+                  問いに答えた返事と同じ形で出ると、何を聞いたのか探すことになる。
+                */}
+                {messages[0]?.role === 'assistant' && (
+                  <div className="hud-mono text-[11px] tracking-[0.06em] -mb-2" style={{ color: 'var(--hud-accent)' }}>
+                    IRIS から
+                  </div>
+                )}
                 {messages.map((m) =>
                   m.role === 'user' ? (
                     <div key={m.id} className="flex gap-2 text-[13px] leading-[1.7] text-zinc-500">
@@ -1698,6 +1784,33 @@ export default function App() {
           style={{ paddingBottom: 'calc(2rem + env(safe-area-inset-bottom))' }}
         >
           <div ref={responseStatusHost} className="flow-root mx-auto w-full max-w-[720px] pointer-events-auto">
+      {incoming && incoming.conversationId !== conversationId && (
+        <div className="mb-2 flex items-center gap-1.5" role="status">
+          <button
+            type="button"
+            onClick={() => {
+              markOpenerSeen(incoming.conversationId);
+              setIncoming(null);
+              void openConversation(incoming.conversationId);
+            }}
+            className="hud-press flex-1 min-w-0 flex items-center gap-2 rounded-full px-4 py-2 text-left text-[13px] bg-[var(--hud-panel)] text-[var(--hud-text)] border border-[var(--hud-line)] hover:border-[var(--hud-line-strong)]"
+          >
+            <span className="w-1.5 h-1.5 rounded-full shrink-0" style={{ background: 'var(--hud-accent)' }} />
+            <span className="hud-mono text-[11px] shrink-0" style={{ color: 'var(--hud-accent)' }}>IRIS から</span>
+            <span className="truncate">{incoming.title ?? '話があります'}</span>
+            <span className="ml-auto shrink-0 text-[var(--hud-muted)]">›</span>
+          </button>
+          <button
+            type="button"
+            aria-label="あとで見る"
+            title="あとで見る（履歴には残ります）"
+            onClick={() => { markOpenerSeen(incoming.conversationId); setIncoming(null); }}
+            className="hud-press shrink-0 w-8 h-8 grid place-items-center rounded-full text-[var(--hud-muted)] hover:text-[var(--hud-text)]"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
       {pendingApproval && (
         <div className="iris-approval mb-3" role="region" aria-labelledby="approval-heading">
           <div className="hud-panel rounded-[22px] w-full p-4 sm:p-5 flex flex-col gap-3 max-h-[min(48dvh,420px)]">

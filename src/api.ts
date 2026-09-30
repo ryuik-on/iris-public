@@ -227,6 +227,22 @@ export function fetchPendingApprovals() {
   return request<{ pendingApprovals: any[] }>('/api/approvals/pending');
 }
 
+/** IRIS が先に話しかけた会話。`replied` は利用者が一度でも答えたか。 */
+export interface OpenerView {
+  key: string;
+  conversationId: string;
+  ruleId: string;
+  suggestionId: string;
+  createdAt: string;
+  title: string | null;
+  replied: boolean;
+  text: string | null;
+}
+
+export function fetchOpeners() {
+  return request<{ openers: OpenerView[] }>('/api/proactive/openers');
+}
+
 /**
  * 会話の出し先を選ぶ。`provider` に `null` を渡すと既定へ戻る。
  *
