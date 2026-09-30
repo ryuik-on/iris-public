@@ -11,7 +11,29 @@ import UserNotifications
  * 条件を直したあとは「発火はしている、届いていない」だった。
  *
  * ここが押し出す側。盤は常駐していて身元（`com.user.iris.hud`）を持つので、
- * macOS の通知がそのまま使える。
+ * macOS の通知がそのまま使える —— **はずだった。**
+ *
+ * ## この機械では通らない（実測 2026-09-30）
+ *
+ * `requestAuthorization` は確認を出さずに即
+ * 「Notifications are not allowed for this application」を返す。**拒否された
+ * のではなく、問い合わせること自体が通っていない。**
+ *
+ * 切り分けた結果：
+ *
+ *   - LaunchServices には登録されている（`lsregister -dump` に出る）
+ *   - 署名は valid、`Info.plist` は `APPL`＋バンドルID、隔離属性も無い
+ *   - **同じ作り方の最小のアプリ**（別のバンドルID、ad-hoc 署名）では応答すら
+ *     返らない —— つまり盤の作りの問題ではない
+ *   - `osascript` の `display notification` も届かない。`com.apple.ncprefs` に
+ *     Script Editor も含めて**一つも登録が無い**
+ *
+ * **手元で署名したアプリに通知の許可が下りない機械**か、通知そのものが
+ * 止められている。どちらにせよ、ここを直しても届かない。
+ *
+ * この道を捨てずに残してあるのは、**確かめた事実がここにしか無い**から。
+ * 許可が下りる機械に移せば、このまま動く。届ける先を変えるなら、
+ * `deliver` を呼んでいる側（`IrisMenuBar.swift` の `refresh`）を差し替える。
  *
  * ## 同じことを二度言わない
  *
@@ -52,8 +74,10 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
   private func ensureAllowed(_ then: @escaping (Bool) -> Void) {
     if asked { then(allowed); return }
     asked = true
+    trace("notify: asking for permission")
     UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) {
       [weak self] granted, error in
+      trace("notify: permission answered granted=\(granted) error=\(error?.localizedDescription ?? "none")")
       if let error {
         NSLog("IRIS: 通知の許可を取れませんでした: %@", error.localizedDescription)
       }
@@ -70,12 +94,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
    */
   func deliver(_ pending: [Suggestion]) {
     // id の無い提案は追えないので出さない。**二度言わない保証が付けられない。**
+    trace("notify: pending=\(pending.count) delivered=\(delivered.count)")
     let fresh = pending.filter { item in
       guard let id = item.id else { return false }
       return !delivered.contains(id)
     }
     guard !fresh.isEmpty else { return }
+    trace("notify: fresh=\(fresh.count)")
     ensureAllowed { [weak self] granted in
+      trace("notify: granted=\(granted)")
       guard let self, granted else { return }
       for item in fresh.suffix(3) {
         self.post(item)
@@ -104,6 +131,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
       trigger: nil
     )
     UNUserNotificationCenter.current().add(request) { error in
+      trace("notify: posted \(id) error=\(error?.localizedDescription ?? "none")")
       if let error {
         NSLog("IRIS: 通知を出せませんでした: %@", error.localizedDescription)
       }
