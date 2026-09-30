@@ -227,7 +227,13 @@ function eventIdentity(e: CalendarEvent): string {
  */
 export interface LiveCalendarSource {
   configured(): boolean;
-  read(days: number): Promise<CalendarReading & { source: string }>;
+  /**
+   * `from` を渡すと、その日の 0 時から `days` 日を読む。無ければ今日から。
+   *
+   * 「この先 N 日」しか聞けなかったので、**来週を見るには来週まで全部読む**
+   * しかなく、先週は読む手段が無かった。暦を前後にめくるための口。
+   */
+  read(days: number, from?: Date): Promise<CalendarReading & { source: string }>;
 }
 
 export class CalendarService {
@@ -317,6 +323,13 @@ export class CalendarService {
        * would preserve its own contents forever while looking freshly synced.
        */
       excludeCache?: boolean;
+      /**
+       * この日の 0 時から読む。無ければ今日から。
+       *
+       * 暦を前後にめくる画面のため。他の呼び出し口は渡さないので、
+       * 今までの窓は変わらない。
+       */
+      from?: Date;
     } = {}
   ): Promise<BestCalendarReading> {
     /*
@@ -324,7 +337,8 @@ export class CalendarService {
      * 「いまの真実」を作るための読みで、少し前の答えでは用を成さない。
      */
     if (!options.excludeCache) {
-      const key = String(days);
+      // 始まりが違えば別の問い。**同じ日数でも、別の週の答えを返さない。**
+      const key = options.from ? `${days}@${options.from.toDateString()}` : String(days);
       const held = this.reuse.get(key);
       if (held && this.now() - held.at < this.reuseMs) return held.value;
       /*
@@ -362,7 +376,7 @@ export class CalendarService {
 
   private async readBestUncached(
     days: number,
-    options: { excludeCache?: boolean } = {}
+    options: { excludeCache?: boolean; from?: Date } = {}
   ): Promise<BestCalendarReading> {
     const fellBackFrom: SourceFallback[] = [];
 
@@ -385,7 +399,7 @@ export class CalendarService {
         .filter(({ source }) => source.configured())
         .map(async ({ name, source }) => {
           try {
-            return { name, reading: await source.read(days) };
+            return { name, reading: await source.read(days, options.from) };
           } catch (err) {
             return { name, error: err };
           }
@@ -408,7 +422,13 @@ export class CalendarService {
     // Only when neither of the others produced anything. EventKit is refused
     // under launchd, so asking it routinely would cost a subprocess and a
     // timeout for nothing.
-    if (readings.length === 0) {
+    /*
+     * 始まりを指定された読みでは使わない。EventKit の口は「今日から」しか
+     * 読めないので、**別の週を聞かれて今週を返す**ことになる —— 日付で
+     * 絞った先では「その週は何も無い」に見える。答えられないなら、
+     * 答えられないと言う方がいい。
+     */
+    if (readings.length === 0 && !options.from) {
       try {
         readings.push({ source: 'eventkit', reading: await this.read(days) });
       } catch (err) {

@@ -235,10 +235,18 @@ export class GoogleCalendarClient {
    * once — at whatever date the series was defined — and every question about
    * "this week" is answered from a series definition instead of a schedule.
    */
-  async read(days = 14): Promise<GoogleCalendarReading> {
+  async read(days = 14, from?: Date): Promise<GoogleCalendarReading> {
     const started = Date.now();
-    const timeMin = startOfToday(started).toISOString();
-    const timeMax = new Date(started + days * 86_400_000).toISOString();
+    /*
+     * 始まりを渡されたら、その日の 0 時から丸 `days` 日。渡されなければ
+     * 今までどおり「今日の 0 時から、いまから `days` 日後まで」。**既定の
+     * 窓は変えない** —— 他の呼び出し口はすべてこちらを前提にしている。
+     */
+    const min = from ? startOfToday(from.getTime()) : startOfToday(started);
+    const timeMin = min.toISOString();
+    const timeMax = from
+      ? new Date(min.getFullYear(), min.getMonth(), min.getDate() + days).toISOString()
+      : new Date(started + days * 86_400_000).toISOString();
 
     const calendars = await this.listCalendarIds();
     const events: CalendarEvent[] = [];

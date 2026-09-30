@@ -506,6 +506,58 @@ async function main() {
     check('失敗は覚えないので、次の問いはまた試す', attempts === 2, `attempts=${attempts}`);
   }
 
+  // -----------------------------------------------------------------------
+  // 暦をめくる。**別の週を聞かれたら、別の週を答える。**
+  //
+  // 読み手は「今日から N 日」しか聞けなかった。始まりを渡せるようにしたので、
+  // 確かめたいのは三つ —— 始まりが源まで届くこと、同じ日数でも週が違えば
+  // 使い回さないこと、今日からしか読めない EventKit に逃げないこと。
+  section('始まりの日を渡して読む');
+  {
+    const asked: Array<string | null> = [];
+    const live = {
+      configured: () => true,
+      read: async (_days: number, from?: Date) => {
+        asked.push(from ? from.toDateString() : null);
+        return {
+          source: 'google' as const, events: [], days: 7, elapsedMs: 1,
+          calendarsVisible: 1, calendarNames: ['gmail'], readAt: new Date().toISOString(),
+        };
+      },
+    };
+    const service = new CalendarService(
+      () => { throw new Error('no binary'); }, [{ name: 'google', source: live }], join(dir, 'none.json')
+    );
+    const next = new Date(2026, 9, 5);
+    const after = new Date(2026, 9, 12);
+    await service.readBest(7, { from: next });
+    eq('始まりが源まで届く', asked[0], next.toDateString());
+    await service.readBest(7, { from: after });
+    eq('同じ日数でも、週が違えば使い回さない', asked.length, 2);
+    await service.readBest(7, { from: next });
+    eq('同じ週をもう一度聞けば使い回す', asked.length, 2);
+    await service.readBest(7);
+    eq('始まりを渡さなければ今までどおり', asked[2], null);
+  }
+  {
+    // 全部の源が落ちたとき。今日から読む EventKit に逃げると、**来週を頼んで
+    // 今週が返り**、日付で絞った先では「来週は何も無い」に見える。
+    let binaryAsked = false;
+    const failing = {
+      configured: () => true,
+      read: async () => { throw new CalendarUnavailableError('refresh_expired', '失効'); },
+    };
+    let raised: any = null;
+    try {
+      await new CalendarService(
+        () => { binaryAsked = true; throw new Error('no binary'); },
+        [{ name: 'google', source: failing }], join(dir, 'nothing-either.json')
+      ).readBest(7, { from: new Date(2026, 9, 5) });
+    } catch (err) { raised = err; }
+    check('週を指定した読みで全部落ちたら、答えずに断る', raised !== null);
+    check('今日からしか読めない EventKit には聞かない', !binaryAsked);
+  }
+
   console.log(`\n${'─'.repeat(60)}`);
   console.log(`Google calendar: ${passed} passed, ${failed} failed`);
   rmSync(dir, { recursive: true, force: true });

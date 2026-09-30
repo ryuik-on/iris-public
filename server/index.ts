@@ -5484,8 +5484,24 @@ app.post('/api/calendar/events', async (req, res) => {
 
 app.get('/api/schedule', async (req, res) => {
   const days = Math.min(Math.max(parseInt(String(req.query.days ?? '7'), 10) || 7, 1), 31);
+  /**
+   * どの日から読むか。`YYYY-MM-DD`。無ければ今日。
+   *
+   * 週の画面が前後にめくるための口。**形の合わない値は黙って今日に読み替えず、
+   * 断る** —— 「来週」を頼んで今週が返ると、画面は来週の顔で今週を出す。
+   */
+  const fromRaw = req.query.from === undefined ? null : String(req.query.from);
+  let fromDay: Date | null = null;
+  if (fromRaw !== null) {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(fromRaw);
+    const parsed = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+    if (!parsed || parsed.getMonth() !== Number(m![2]) - 1 || parsed.getDate() !== Number(m![3])) {
+      return res.status(400).json({ error: 'from は YYYY-MM-DD の実在する日付で渡してください。', from: fromRaw });
+    }
+    fromDay = parsed;
+  }
   try {
-    const reading = await calendar.readBest(days);
+    const reading = await calendar.readBest(days, fromDay ? { from: fromDay } : {});
     const events = (reading.events ?? []).map((e: any) => ({
       ...e,
       /** The filing dropped, by the same rule the band uses. */
@@ -5505,7 +5521,7 @@ app.get('/api/schedule', async (req, res) => {
     const expected = ['google', 'icloud'].filter((name) => contributedExpectations[name]?.());
     const missing = expected.filter((name) => !live.includes(name));
 
-    const today = new Date();
+    const today = fromDay ?? new Date();
     const dates: string[] = [];
     for (let i = 0; i < days; i++) {
       const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + i);
@@ -5516,6 +5532,7 @@ app.get('/api/schedule', async (req, res) => {
 
     /**
      * 今日より前は返さない。**「この先 N 日」と名乗っている口なので。**
+     * `from` を渡されたときは、その窓の外を返さない —— 理由は同じ。
      *
      * 空き時間はもとから今日を起点に組んでいた（`dates`）のに、予定の方は
      * `readBest` が返したものをそのまま流していた。控えには前の週の予定が
@@ -5548,10 +5565,20 @@ app.get('/api/schedule', async (req, res) => {
      */
     const byDay = sliceByDay(within, dates);
 
-    const free = missing.length > 0 ? [] : dates.map((d) => freeForDay(d, byDay.get(d) ?? []));
+    /*
+     * 空きは今日から先だけ。**過ぎた日に「空き 15h」と書くのは、使えない時間を
+     * 使える顔で出すこと。**前の週をめくったときに起きる。
+     */
+    const now = new Date();
+    const todayKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const free = missing.length > 0
+      ? []
+      : dates.filter((d) => d >= todayKey).map((d) => freeForDay(d, byDay.get(d) ?? []));
 
     res.json({
       days,
+      /** 窓の最初の日。画面が「どの週を見ているか」を答えから確かめるため。 */
+      from: first,
       events: within,
       free,
       freeText: missing.length > 0 ? null : asPlainText(free, live, new Date()),

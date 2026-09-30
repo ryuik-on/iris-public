@@ -404,6 +404,7 @@ export interface ScheduleEvent {
   end: string | null;
   allDay: boolean;
   calendar?: string | null;
+  location?: string | null;
 }
 
 export interface FreeDay {
@@ -414,6 +415,8 @@ export interface FreeDay {
 
 export interface ScheduleReading {
   days: number;
+  /** 窓の最初の日（`YYYY-MM-DD`）。古いサーバは返さない。 */
+  from?: string;
   events: ScheduleEvent[];
   free: FreeDay[];
   freeText: string | null;
@@ -421,8 +424,10 @@ export interface ScheduleReading {
   blocked: string | null;
 }
 
-export const fetchSchedule = (days = 7) =>
-  request<ScheduleReading>(`/api/schedule?days=${encodeURIComponent(String(days))}`);
+export const fetchSchedule = (days = 7, from?: string) =>
+  request<ScheduleReading>(
+    `/api/schedule?days=${encodeURIComponent(String(days))}${from ? `&from=${encodeURIComponent(from)}` : ''}`
+  );
 
 /**
  * 家計の集計。**共有してよい側だけ。**

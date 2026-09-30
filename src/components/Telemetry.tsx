@@ -24,6 +24,7 @@ import type {
   BudgetState, CliUsageState, FdpTask, FdpTasksReading,
 } from '../api';
 import { eventsForTodayTimeline, timelineMinutes, NEXT_DAY_TIMELINE_MINUTES, todayListDays } from '../calendarTimeline';
+import { WeekCalendar } from './WeekCalendar';
 
 /**
  * The right rail: what IRIS currently believes, and where it got it.
@@ -873,7 +874,14 @@ function DayBand({ events, now }: { events: ScheduleEvent[]; now: Date }) {
 }
 
 export function SchedulePanel() {
-  const [showWeek, setShowWeek] = React.useState(false);
+  /**
+   * 週の暦を開いているか。
+   *
+   * ここにあった「7日分を見る」は、押すと**縮尺の無い一覧**に変わっていた。
+   * 空きが行間に消えるので、帯を作った理由が週を見た瞬間に無くなる。
+   * 週は窓いっぱいの暦で見る（`WeekCalendar`）。この欄は今日のまま。
+   */
+  const [weekOpen, setWeekOpen] = React.useState(false);
   const [reading, setReading] = React.useState<ScheduleReading | null>(null);
   const [failed, setFailed] = React.useState<string | null>(null);
   /**
@@ -926,7 +934,7 @@ export function SchedulePanel() {
   const todayKey = new Date().toLocaleDateString('sv-SE');
   const nextDayEarlyEvents = eventsForTodayTimeline(reading.events, todayKey)
     .filter((event) => event.dayOffset === 1);
-  const shownDays = showWeek ? days : todayListDays(days, todayKey, nextDayEarlyEvents.length > 0);
+  const shownDays = todayListDays(days, todayKey, nextDayEarlyEvents.length > 0);
   const nextEvent = [...reading.events]
     .filter(e => new Date(e.start).getTime() > Date.now())
     .sort((a, b) => a.start.localeCompare(b.start))[0];
@@ -987,10 +995,10 @@ export function SchedulePanel() {
       <DayBand events={reading.events} now={new Date()} />
 
       {days.length === 0 && <p className="text-[11px] text-zinc-600">この先 {reading.days} 日に予定はありません。</p>}
-      {!showWeek && days.length > 0 && shownDays.length === 0 && (
+      {days.length > 0 && shownDays.length === 0 && (
         <p className="text-[12px] text-zinc-500 mb-2">今日の予定はありません。</p>
       )}
-      {!showWeek && nextEvent && (
+      {nextEvent && (
         <div className="text-[12px] text-zinc-500 mb-3">
           次：{nextEvent.start.slice(5,10).replace('-', '/')} {nextEvent.allDay ? '終日' : nextEvent.start.slice(11,16)}　{nextEvent.title}
         </div>
@@ -1017,7 +1025,7 @@ export function SchedulePanel() {
                   <span className="text-[13px] text-zinc-200 leading-snug truncate">{e.title}</span>
                 </div>
               ))}
-              {!showWeek && day === todayKey && nextDayEarlyEvents.map((e, i) => (
+              {day === todayKey && nextDayEarlyEvents.map((e, i) => (
                 <div key={`next-day-${i}`} className="flex items-baseline gap-2 mt-0.5">
                   <span className="hud-mono text-[11px] text-zinc-500 flex-shrink-0 w-[76px]">
                     翌日 {e.start.slice(11, 16)}
@@ -1029,12 +1037,11 @@ export function SchedulePanel() {
           );
         })}
       </div>
-      {days.some(day => day !== todayKey) && (
-        <button type="button" aria-expanded={showWeek} onClick={() => setShowWeek(v => !v)}
-          className="mt-3 text-[12px] text-[var(--hud-accent)] py-2">
-          {showWeek ? '今日だけ表示' : `${reading.days}日分の予定を見る`}
-        </button>
-      )}
+      <button type="button" aria-haspopup="dialog" aria-expanded={weekOpen} onClick={() => setWeekOpen(true)}
+        className="mt-3 text-[12px] text-[var(--hud-accent)] py-2">
+        週で見る
+      </button>
+      {weekOpen && <WeekCalendar onClose={() => setWeekOpen(false)} />}
     </Panel>
   );
 }

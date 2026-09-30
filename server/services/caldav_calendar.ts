@@ -627,7 +627,7 @@ export class CaldavCalendarClient {
     );
   }
 
-  async read(days = 14): Promise<CaldavReading> {
+  async read(days = 14, fromDay?: Date): Promise<CaldavReading> {
     if (!this.configured()) {
       throw new CalendarUnavailableError(
         'caldav_not_configured',
@@ -640,9 +640,13 @@ export class CaldavCalendarClient {
     // Beginning of today rather than this moment, so an afternoon reading
     // still contains the morning. See google_calendar.ts for the reasoning;
     // both sources have to agree or the merge produces a half-day.
-    const from = new Date(started);
+    const from = new Date(fromDay ? fromDay.getTime() : started);
     from.setHours(0, 0, 0, 0);
-    const to = new Date(started + days * 86_400_000);
+    // 始まりを渡されたら丸 `days` 日。Google 側と同じ窓にしないと、合わせた
+    // ときに片方だけ最後の日が欠ける。
+    const to = fromDay
+      ? new Date(from.getFullYear(), from.getMonth(), from.getDate() + days)
+      : new Date(started + days * 86_400_000);
 
     const calendars = await this.discover();
     const events: CalendarEvent[] = [];
