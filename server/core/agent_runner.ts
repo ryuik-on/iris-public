@@ -70,6 +70,7 @@ export const DEFAULT_POLICY: AgentPolicy = {
 };
 
 export type RefusalCode =
+  | 'isolation_unavailable'
   | 'repo_not_allowed'
   | 'repo_not_absolute'
   | 'busy'
@@ -187,27 +188,7 @@ export function childEnvironment(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
     USER: parent.USER ?? '',
     LOGNAME: parent.LOGNAME ?? parent.USER ?? '',
 
-    /**
-     * The ban on pushing, moved from a string match to the transport layer.
-     *
-     * `DENIED_TOOLS` holds `Bash(git push*)`, which is a pattern applied to a
-     * command line — and a command line has many spellings. `git -c x=y push`,
-     * a push inside a script, an alias, a here-doc: each is the same act and
-     * none of them match. The pattern is a fence around one spelling.
-     *
-     * Git itself will refuse a transport that is not on this list, whoever
-     * invokes it and however it is written. Measured on 2026-08-21 against a
-     * real https remote: unrestricted, git reaches GitHub and reports
-     * "Repository not found"; with this set, it stops at "fatal: transport
-     * 'https' not allowed" without opening a connection.
-     *
-     * `file` stays allowed because the worktree talks to its own parent
-     * repository over it — removing that breaks the commit the agent is
-     * required to make. Nothing reachable over `file` leaves this machine.
-     *
-     * This also covers the second agent. Codex has no `--disallowedTools`, so
-     * a flag-based ban could not have been expressed there at all.
-     */
+    /** Defense in depth: parent Git operations never use network transports. */
     GIT_ALLOW_PROTOCOL: 'file',
 
     /** No credential prompt on a run nobody is watching; fail instead of hang. */
@@ -250,66 +231,8 @@ export function leakedCredentials(env: NodeJS.ProcessEnv): string[] {
  */
 export const DENIED_TOOLS = ['Bash(git push*)', 'Bash(gh *)'];
 
-/**
- * The commands an unattended agent may run.
- *
- * `acceptEdits` covers editing files and nothing else — a claim to the
- * contrary was made when this was chosen, and the first live run corrected it:
- * the agent wrote sixty-three good lines and then reported that 「あらゆる
- * スクリプト実行が requires approval で拒否されました」. It could not run
- * `bash -n`, could not run the tests, and could not commit. Its work survived
- * only as uncommitted changes in a worktree, which is one `git worktree
- * remove` from gone.
- *
- * Listed individually rather than as `Bash(git *)`. The wildcard would cover
- * `git push`, and relying on the deny list to win that argument is relying on
- * a precedence rule instead of on not granting the thing.
- *
- * Running the tests is on the list deliberately: an agent that cannot check
- * its own work reports 「未確認」 at best, and at worst reports success it did
- * not verify.
- */
-export const ALLOWED_TOOLS = [
-  'Edit',
-  'Write',
-  'Read',
-  'Glob',
-  'Grep',
-  'Bash(git add:*)',
-  'Bash(git commit:*)',
-  'Bash(git status:*)',
-  'Bash(git diff:*)',
-  'Bash(git log:*)',
-  'Bash(npm test)',
-  'Bash(npm run test:*)',
-  'Bash(npx tsc:*)',
-  'Bash(bash -n:*)',
-  /**
-   * Building and typechecking, which the handoffs have been asking for and
-   * this list did not permit.
-   *
-   * A handoff written on 2026-08-22 required `npm run build` to pass. Codex
-   * ran it, because Codex's confinement is a sandbox and not a list of
-   * commands; Claude could not have, and would have had to report the
-   * requirement unmet — the same instruction behaving differently depending on
-   * which vendor the router happened to pick, for a reason nobody would have
-   * looked for.
-   *
-   * `npm run test:*` does not cover these. It matches `test:speech`, not
-   * `typecheck` and not `build`.
-   *
-   * Named exactly rather than as `npm run *`. The wildcard would include
-   * `dev`, which starts a watcher that never exits and would spend the run's
-   * whole time limit doing nothing.
-   */
-  'Bash(npm run build)',
-  'Bash(npm run typecheck)',
-  'Bash(npm run verify)',
-  'Bash(npm run smoke)',
-  /** Read-only git, for an agent working out where it is. */
-  'Bash(git rev-parse:*)',
-  'Bash(git show:*)',
-];
+/** Only file tools: commands and external tools are absent in restricted mode. */
+export const ALLOWED_TOOLS = ['Edit', 'Write', 'Read', 'Glob', 'Grep'];
 
 /**
  * The command, assembled here.
@@ -330,17 +253,7 @@ export const ALLOWED_TOOLS = [
  * that could pass a path could pass any path, and the argument would stop
  * being an id.
  */
-/**
- * What the agent is told beyond the handoff.
- *
- * Committing has to be asked for. The second live run wrote good code, ran
- * `bash -n`, and stopped — the handoff described the change and said nothing
- * about recording it, so the work existed only as uncommitted edits in a
- * worktree, one `git worktree remove` from gone.
- *
- * Kept short and appended rather than folded into the handoff: the handoff is
- * about the task, and this is about the fact that nobody is watching.
- */
+/** The parent records commits and performs verification after editing ends. */
 export const UNATTENDED_INSTRUCTIONS = [
   '',
   '---',
@@ -349,8 +262,8 @@ export const UNATTENDED_INSTRUCTIONS = [
   '',
   'あなたは無人で実行されています。利用者は見ていません。',
   '',
-  '- 作業が終わったら、**必ず変更をコミットしてください**（`git add` と `git commit`）。',
-  '  コミットしなければ、この作業ツリーごと失われます。',
+  '- 使えるのは作業場のファイルの読み書きだけです。コマンド・コードの実行と外部の取得はできません。',
+  '- 変更とテストを書いてください。コミットと隔離された環境での検査は、終了後に IRIS が行います。',
   '- `git push` は禁止されています。実行しないでください。',
   '- 検証できたことと、できなかったことを分けて報告してください。',
   '  実行できなかったコマンドがあれば、それを名指しで書いてください。',
@@ -486,12 +399,16 @@ export const AGENTS: Record<AgentKind, AgentBinding> = {
     kind: 'claude',
     label: 'claude-code',
     binaryEnvVar: 'IRIS_AGENT_BINARY',
-    defaultBinary: (home) => `${home}/.npm-global/bin/claude`,
+    defaultBinary: (home) => `${home}/.local/bin/claude`,
     networkForCommands: 'available',
     costMeter: 'transcript',
-    argv: (prompt) => [
+    argv: (prompt, { model }) => [
       '-p',
       `${prompt}${UNATTENDED_INSTRUCTIONS}`,
+      '--restricted', '--safe-mode', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+      '--tools', ...ALLOWED_TOOLS,
+      '--permission-prompts', 'none',
+      ...(model ? ['--model', model] : []),
       '--permission-mode',
       'acceptEdits',
       '--output-format',
@@ -850,6 +767,7 @@ export type StopReason =
   | 'cost_limit'
   | 'unmeterable'
   | 'machine_slept'
+  | 'spawn_failed'
   | 'stopped_by_user';
 
 export interface RunProgress {
@@ -950,6 +868,11 @@ export function describeStop(reason: StopReason, policy: AgentPolicy): string {
       return (
         '契約の利用上限に達したため終了しました。モデルや作業の内容とは関係がありません。' +
         '記録に残しているので、頻度が分かればプランを上げるかどうかを事実から判断できます。'
+      );
+    case 'spawn_failed':
+      return (
+        'エージェントを起動できませんでした（実行ファイルが見つからない、または開けません）。' +
+        '利用者が止めたのではありません。設定の実行ファイルの場所（IRIS_CODEX_BINARY など）を確かめてください。'
       );
     case 'stopped_by_user':
       return '利用者の指示で停止しました。';

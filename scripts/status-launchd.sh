@@ -50,7 +50,7 @@ if [ -z "$NEWEST" ]; then
       echo "バックアップがありません（$BACKUP_DIR は空です）"
     fi
   fi
-  echo "  取得: curl -X POST localhost:3002/api/backups"
+  echo "  取得: npm run --silent iris:request -- POST /api/backups"
 else
   STAMP="${NEWEST%%$'\t'*}"
   NAME="${NEWEST#*$'\t'}"
@@ -105,7 +105,7 @@ lsof -nP -iTCP:5173 -sTCP:LISTEN 2>/dev/null || echo "5173 LISTENなし"
 
 echo
 echo "=== Health ==="
-curl -fsS http://localhost:3002/api/health 2>/dev/null || echo "Health API応答なし"
+npm --prefix "$(cd "$(dirname "$0")/.." && pwd)" run --silent iris:request -- GET /api/health 2>/dev/null || echo "Health API応答なし"
 echo
 
 # Kept from the version that exited on the first section: an unregistered

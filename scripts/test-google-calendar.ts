@@ -89,6 +89,33 @@ async function main() {
   }
 
   // -----------------------------------------------------------------------
+  section('Finding one event when titles nest inside each other');
+
+  {
+    const store = freshStore();
+    store.saveTokens('calendar', { access_token: 'a', expires_in: 3600 });
+    const ev = (id: string, summary: string, hhmm: string) => ({ id, summary, start: { dateTime: `2026-10-29T${hhmm}:00+09:00` }, end: { dateTime: `2026-10-29T${hhmm.replace(/^(\d\d)/, (m) => String(Number(m) + 1).padStart(2, '0'))}:00+09:00` } });
+    const day = { items: [ev('right', '病理学Ⅰ各論試験', '08:30'), ev('wrong', '病理学Ⅰ各論試験（再）', '08:30'), ev('other', '循環器1-3（再）', '14:00')] };
+    const { impl } = stubFetch([{ match: /events/, body: day }]);
+    const client = new GoogleCalendarClient({ store, clientId: 'cid', clientSecret: 's', fetchImpl: impl });
+    const asked = async (title: string, time?: string) => (await client.findEvent('c', '2026-10-29', title, time))?.id ?? null;
+    eq('the longer title picks its own event, not the one it contains', await asked('病理学I各論試験（再）'), 'wrong');
+    eq('the shorter title picks the exact one, not the longer that contains it', await asked('病理学I各論試験'), 'right');
+    eq('full-width, half-width and Roman numerals count as the same title', await asked('病理学Ⅰ各論試験(再)'), 'wrong');
+    eq('a title that matches nothing exactly and several loosely is not guessed', await asked('病理学'), null);
+    const tie = { items: [ev('a', '面談 田中さん', '10:00'), ev('b', '面談 田中さん', '19:00')] };
+    const t2 = new GoogleCalendarClient({ store, clientId: 'cid', clientSecret: 's', fetchImpl: stubFetch([{ match: /events/, body: tie }]).impl });
+    eq('two identical titles are not guessed without a time', (await t2.findEvent('c', '2026-10-29', '面談田中さん'))?.id ?? null, null);
+    eq('a start time breaks the tie', (await t2.findEvent('c', '2026-10-29', '面談田中さん', '19:00'))?.id ?? null, 'b');
+    // 題の空白だけが違い、時刻も同じ重複（場所の有る無しだけが違う）。2026-10-10 の 10/19 の件。
+    const twin = { items: [{ ...ev('with', '病理学Ⅰ実習41-42', '12:50'), location: '教育棟5F501' }, ev('without', '病理学Ⅰ実習 41-42', '12:50')] };
+    const t3 = new GoogleCalendarClient({ store, clientId: 'cid', clientSecret: 's', fetchImpl: stubFetch([{ match: /events/, body: twin }]).impl });
+    eq('twins that differ only in location are not guessed', (await t3.findEvent('c', '2026-10-29', '病理学Ⅰ実習 41-42', '12:50'))?.id ?? null, null);
+    eq('an empty location picks the one with no place written', (await t3.findEvent('c', '2026-10-29', '病理学Ⅰ実習 41-42', '12:50', ''))?.id ?? null, 'without');
+    eq('a named location picks the one that has it', (await t3.findEvent('c', '2026-10-29', '病理学Ⅰ実習 41-42', '12:50', '教育棟5F501'))?.id ?? null, 'with');
+  }
+
+  // -----------------------------------------------------------------------
   section('Refreshing must not lose the refresh token');
 
   {
@@ -390,6 +417,24 @@ async function main() {
     eq('the surviving source answers', reading.events.length, 1);
     eq('as itself rather than as a merge', reading.source, 'cache');
     eq('and the failure travels with it', reading.fellBackFrom[0].code, 'refresh_expired');
+  }
+
+  {
+    // 返事をしない源は、決められた時間で見切って控えで答える。
+    const hanging = { configured: () => true, read: () => new Promise<any>(() => {}) };
+    const cachePath = join(dir, 'hang-cache.json');
+    writeFileSync(cachePath, JSON.stringify({
+      ok: true, synced_at: new Date().toISOString(), days: 14,
+      events: [{ summary: 'ギター会', date: '2026-08-19', calendar: '自宅', allday: true }],
+    }));
+    const t0 = Date.now();
+    const reading: any = await new CalendarService(
+      () => { throw new Error('no binary'); }, [{ name: 'icloud', source: hanging }], cachePath,
+      30_000, () => Date.now(), 200
+    ).readBest(14);
+    check('a source that never answers does not hold the reading', Date.now() - t0 < 3000);
+    eq('the cache answers instead', reading.source, 'cache');
+    eq('and the timeout travels with it', reading.fellBackFrom[0].code, 'timeout');
   }
 
   {

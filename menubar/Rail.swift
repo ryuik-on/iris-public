@@ -125,12 +125,29 @@ struct RailHead {
     let speak: RailSpeak?
 }
 
-struct RailSpeak {
-    /// `期限` など、何の話かを言う語。
+struct RailSpeakItem {
+    /// 内部の種類を表す二文字。レールには出さない（何の語か分からなかった）。
     let label: String
     let conversationId: String
-    /// 返事を待っている話の数。
-    let count: Int
+    /// その会話の一言目の題。
+    let title: String
+    /// 一言目の中身の頭の数行。広がった札に出す。
+    let preview: String
+    /// ISO 8601。「何分前」を出すため。
+    let createdAt: String?
+}
+
+/**
+ * 返事を待っている話、新しい順。
+ *
+ * 押すと左へ円形に広がる札が開き、**題と中身の頭が読める**。話を開くのは、その
+ * 札の行を押したとき。最初は押すたびに次の会話へ切り替えていたが、「朝 2」や
+ * 「開発」という語が何を指すのか分からず、押してみるまで中身が見えなかった
+ * （2026-10-01）。
+ */
+struct RailSpeak {
+    let items: [RailSpeakItem]
+    var count: Int { items.count }
 }
 
 struct RailWindow {
@@ -222,7 +239,15 @@ final class RailView: NSView {
      * と分かっている十数秒**は古くない。むしろ、読めていたものが押した瞬間に
      * 消える方が、壊したように見える。
      */
-    private var spinning: Bool { loading }
+    /**
+     * 輪を回さない。
+     *
+     * 取りに行っているあいだ、輪の外を弧が回り、まだ読めていないときは輪ごと回って
+     * いた。「取得しているときにぐるぐるするのはやめてほしい。出したままでよくない？」
+     * （利用者、2026-10-01）。読めている値はそのまま出し、読めていないものは**止まった**
+     * 点線のまま。取りに行っていることは、↻ の色（明るくなる）だけで足りる。
+     */
+    private var spinning: Bool { false }
 
     private var spinner: Timer?
     private var spin: CGFloat = 0
@@ -235,6 +260,9 @@ final class RailView: NSView {
     func setCoreStill(_ still: Bool) { core.animates = !still }
 
     private func startSpin() {
+        // 回さない（上の `spinning` を参照）。
+        return
+        // swiftlint:disable:next unreachable_code
         guard spinner == nil else { return }
         // 20fps、一秒でおよそ一周。核と同じ拍。
         spinner = Timer.scheduledTimer(withTimeInterval: 1.0 / 20, repeats: true) { [weak self] _ in
@@ -312,6 +340,12 @@ final class RailView: NSView {
     private var planTop: CGFloat { skyTop + ((head?.sky.isEmpty ?? true) ? 0 : Self.row) }
     /// IRIS から話がある、の段。予定の下、印の上。
     private var speakTop: CGFloat { planTop + (head?.nextPlan != nil ? Self.row : 0) }
+
+    /// 通知の印の中心（窓の座標）。広がる札の中心と高さをここに合わせる。
+    func speakAnchorInWindow() -> NSPoint? {
+        guard head?.speak != nil else { return nil }
+        return convert(NSPoint(x: bounds.midX, y: speakTop + 12), to: nil)
+    }
     /// 印の区画の上端。天気・時計・話の下。
     private var coreTop: CGFloat { speakTop + (head?.speak != nil ? Self.row : 0) }
 
@@ -396,6 +430,8 @@ final class RailView: NSView {
     var onHead: (() -> Void)?
     /// 「IRIS から」の段を押したとき。その会話を開く。
     var onSpeak: ((String) -> Void)?
+    /// 通知の印を押したとき。広がる札は `Rail` が出す。
+    var onNotices: (() -> Void)?
     /// 輪を二度押したとき。その道具のアプリを前に出す。
     var onOpenApp: ((String) -> Void)?
 
@@ -451,7 +487,11 @@ final class RailView: NSView {
         if let head {
             if !head.sky.isEmpty, local.y < planTop { onSelect?(-1); return }
             if head.nextPlan != nil, local.y < speakTop { onSelect?(-2); return }
-            if let speak = head.speak, local.y < coreTop { onSpeak?(speak.conversationId); return }
+            if head.speak != nil, local.y < coreTop {
+                trace("rail notice tap: \(head.speak?.count ?? 0) waiting")
+                onNotices?()
+                return
+            }
             if local.y < Self.flare + headHeight { onHead?(); return }
         }
         let lanesEnd = Self.flare + 6 + headHeight + CGFloat(entries.count) * Self.itemHeight
@@ -640,14 +680,30 @@ final class RailView: NSView {
          * 押すとその会話が開く。
          */
         if let speak = head.speak {
-            if let icon = Sky.image("text.bubble.fill", size: 15, weight: .regular, colour: Ink.iris) {
+            // 0 件は薄く。**無いことを、行ごと消さずに言う。**
+            let tint = speak.count > 0 ? Ink.iris : Ink.aside
+            if let icon = Sky.image("bell.fill", size: 15, weight: .regular, colour: tint) {
                 icon.draw(in: NSRect(
                     x: (bounds.width - icon.size.width) / 2, y: speakTop + 4,
                     width: icon.size.width, height: icon.size.height
                 ))
             }
-            let word = speak.count > 1 ? "\(speak.label) \(speak.count)" : speak.label
-            centred(word, y: speakTop + 22, size: 11, colour: Ink.iris, weight: .semibold)
+            /*
+             * 言葉は「お知らせ」だけ。種類を表す二文字（朝・開発）は、何を指すのか
+             * 分からないと言われた。数はベルの角のバッジ。中身は押した先の札。
+             */
+            centred(speak.count > 0 ? "お知らせ" : "通知", y: speakTop + 22, size: 11, colour: tint, weight: .semibold)
+            if speak.count > 0 {
+                let badge = NSRect(x: bounds.width / 2 + 6, y: speakTop + 1, width: 14, height: 14)
+                Ink.iris.setFill()
+                NSBezierPath(ovalIn: badge).fill()
+                let number = NSAttributedString(string: "\(speak.count)", attributes: [
+                    .font: NSFont.systemFont(ofSize: 9, weight: .bold),
+                    .foregroundColor: NSColor.white,
+                ])
+                let numberSize = number.size()
+                number.draw(at: NSPoint(x: badge.midX - numberSize.width / 2, y: badge.midY - numberSize.height / 2))
+            }
         }
 
     }
@@ -718,7 +774,6 @@ final class RailView: NSView {
             Ink.track.setStroke()
             track.setLineDash([2, 3], count: 2, phase: 0)
             track.stroke()
-            if reloading { travelling(centre, radius: radius + 4.5, width: 1.5) }
             drawGlyph(entry.symbol, at: centre, dimmed: true)
             return
         }
@@ -762,8 +817,6 @@ final class RailView: NSView {
             arc.stroke()
         }
 
-        // 取りに行っているあいだ、輪の外を弧が一周する。読みには触れない。
-        if reloading { travelling(centre, radius: radius + 4.5, width: 1.5) }
 
         /**
          * 内側の輪はやめた。**輪は一本まで。**
@@ -1125,6 +1178,161 @@ final class RailCardView: NSView {
 }
 
 /// レールの窓。右辺に貼り付き、押すとカードが左へ出る。
+/**
+ * 通知を押したときに左へ広がる札。
+ *
+ * 題と中身の頭を並べ、行を押すとその会話を開く。広がり方は、押した通知の印を
+ * 中心にした円（`CAShapeLayer` のマスク）。**札の中身は描くだけで、押した行の
+ * 会話を開くのは呼び元**（`onOpen`）。
+ */
+final class NoticeView: NSView {
+    var items: [RailSpeakItem] = [] { didSet { needsDisplay = true } }
+    var onOpen: ((String) -> Void)?
+    /// 札の下の「通知センター」を押したとき。
+    var onCenter: (() -> Void)?
+
+    override var isFlipped: Bool { true }
+
+    static let width: CGFloat = 320
+    private static let pad: CGFloat = 14
+    private static let headerHeight: CGFloat = 36
+    private static let maxRows = 5
+    private static let footerHeight: CGFloat = 36
+
+    private static func font(_ size: CGFloat, _ weight: NSFont.Weight) -> NSFont {
+        .systemFont(ofSize: size, weight: weight)
+    }
+
+    /// 折り返して `lines` 行までに収めたときの高さ。
+    private static func textHeight(_ text: String, size: CGFloat, weight: NSFont.Weight, lines: Int) -> CGFloat {
+        let f = font(size, weight)
+        let lineHeight = ceil(f.ascender - f.descender + f.leading)
+        let box = NSString(string: text).boundingRect(
+            with: NSSize(width: width - pad * 2, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin], attributes: [.font: f]
+        )
+        return min(ceil(box.height), lineHeight * CGFloat(lines))
+    }
+
+    private static func previewHeight(_ item: RailSpeakItem) -> CGFloat {
+        item.preview.isEmpty ? 0 : textHeight(item.preview, size: 11, weight: .regular, lines: 4)
+    }
+
+    static func rowHeight(_ item: RailSpeakItem) -> CGFloat {
+        let preview = previewHeight(item)
+        return pad
+            + textHeight(item.title, size: 13, weight: .semibold, lines: 2)
+            + (preview > 0 ? 4 + preview : 0)
+            + 6 + 12 + pad
+    }
+
+    private static let emptyHeight: CGFloat = 46
+
+    static func height(for items: [RailSpeakItem]) -> CGFloat {
+        if items.isEmpty { return headerHeight + emptyHeight + footerHeight }
+        return headerHeight + items.prefix(maxRows).reduce(CGFloat(0)) { $0 + rowHeight($1) } + footerHeight
+    }
+
+    private func rows() -> [(NSRect, RailSpeakItem)] {
+        var y = Self.headerHeight
+        var out: [(NSRect, RailSpeakItem)] = []
+        for item in items.prefix(Self.maxRows) {
+            let h = Self.rowHeight(item)
+            out.append((NSRect(x: 0, y: y, width: bounds.width, height: h), item))
+            y += h
+        }
+        return out
+    }
+
+    private static func ago(_ iso: String?) -> String {
+        guard let iso else { return "" }
+        let plain = ISO8601DateFormatter()
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let at = fractional.date(from: iso) ?? plain.date(from: iso) else { return "" }
+        let minutes = Int(Date().timeIntervalSince(at) / 60)
+        if minutes < 1 { return "たった今" }
+        if minutes < 60 { return "\(minutes) 分前" }
+        if minutes < 24 * 60 { return "\(minutes / 60) 時間前" }
+        return "\(minutes / (24 * 60)) 日前"
+    }
+
+    override func draw(_ dirty: NSRect) {
+        let background = NSBezierPath(roundedRect: bounds, xRadius: 16, yRadius: 16)
+        NSColor(srgbRed: 0x0C / 255, green: 0x0E / 255, blue: 0x12 / 255, alpha: 0.94).setFill()
+        background.fill()
+
+        NSString(string: "お知らせ").draw(
+            at: NSPoint(x: Self.pad, y: 12),
+            withAttributes: [.font: Self.font(11, .semibold), .foregroundColor: Ink.aside]
+        )
+
+        let textWidth = bounds.width - Self.pad * 2
+        if items.isEmpty {
+            NSString(string: "返事を待っている通知はありません。").draw(
+                at: NSPoint(x: Self.pad, y: Self.headerHeight + 12),
+                withAttributes: [.font: Self.font(12, .regular), .foregroundColor: Ink.aside]
+            )
+        }
+        for (index, (rect, item)) in rows().enumerated() {
+            if index > 0 {
+                Ink.aside.withAlphaComponent(0.25).setFill()
+                NSRect(x: Self.pad, y: rect.minY, width: rect.width - Self.pad * 2, height: 0.5).fill()
+            }
+            var y = rect.minY + Self.pad
+            let titleHeight = Self.textHeight(item.title, size: 13, weight: .semibold, lines: 2)
+            NSString(string: item.title).draw(
+                with: NSRect(x: Self.pad, y: y, width: textWidth, height: titleHeight),
+                options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                attributes: [.font: Self.font(13, .semibold), .foregroundColor: Ink.label]
+            )
+            y += titleHeight
+            let previewHeight = Self.previewHeight(item)
+            if previewHeight > 0 {
+                y += 4
+                NSString(string: item.preview).draw(
+                    with: NSRect(x: Self.pad, y: y, width: textWidth, height: previewHeight),
+                    options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine],
+                    attributes: [.font: Self.font(11, .regular), .foregroundColor: Ink.aside]
+                )
+                y += previewHeight
+            }
+            NSString(string: Self.ago(item.createdAt)).draw(
+                at: NSPoint(x: Self.pad, y: y + 6),
+                withAttributes: [.font: Self.font(10, .regular), .foregroundColor: Ink.iris]
+            )
+        }
+
+        // 下の行：全部を一枚で見られる場所へ。
+        Ink.aside.withAlphaComponent(0.25).setFill()
+        NSRect(x: Self.pad, y: footerRect.minY, width: bounds.width - Self.pad * 2, height: 0.5).fill()
+        NSString(string: "通知センターを開く  ›").draw(
+            at: NSPoint(x: Self.pad, y: footerRect.minY + 11),
+            withAttributes: [.font: Self.font(12, .semibold), .foregroundColor: Ink.iris]
+        )
+    }
+
+    private var footerRect: NSRect {
+        NSRect(x: 0, y: bounds.height - Self.footerHeight, width: bounds.width, height: Self.footerHeight)
+    }
+
+    override func mouseUp(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        if footerRect.contains(point) {
+            trace("notice center tap")
+            onCenter?()
+            return
+        }
+        if let hit = rows().first(where: { $0.0.contains(point) }) {
+            trace("notice row tap: \(hit.1.conversationId.prefix(8))")
+            onOpen?(hit.1.conversationId)
+        }
+    }
+
+    /// 最初の押しで窓が前に出ず、押した行が空振りしないように。
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 final class Rail: NSPanel {
     /// 上下にずらした位置。次に出したときも同じ高さに置く。
     static let placeKey = "railY"
@@ -1132,6 +1340,9 @@ final class Rail: NSPanel {
     private let view = RailView()
     private var card: NSPanel?
     private var cardView = RailCardView()
+    private var notice: NSPanel?
+    private var noticeView = NoticeView()
+    private var noticeMonitor: Any?
 
     init() {
         super.init(
@@ -1157,6 +1368,15 @@ final class Rail: NSPanel {
         contentView = view
 
         view.onSelect = { [weak self] index in self?.toggleCard(index) }
+        view.onNotices = { [weak self] in self?.toggleNotices() }
+        noticeView.onOpen = { [weak self] id in
+            self?.closeNotices(animated: true)
+            self?.view.onSpeak?(id)
+        }
+        noticeView.onCenter = { [weak self] in
+            self?.closeNotices(animated: true)
+            self?.onCenter?()
+        }
         view.onMoved = { [weak self] y in
             UserDefaults.standard.set(Double(y), forKey: Rail.placeKey)
             // 札が開いていれば一緒に連れていく。置いていくと、どの輪の札か
@@ -1170,6 +1390,9 @@ final class Rail: NSPanel {
         get { view.onHead }
         set { view.onHead = newValue }
     }
+
+    /// 通知の札の「通知センターを開く」を押したとき。
+    var onCenter: (() -> Void)?
 
     /// 「IRIS から」の段を押したとき。
     var onSpeak: ((String) -> Void)? {
@@ -1236,9 +1459,132 @@ final class Rail: NSPanel {
         setFrame(frame, display: true)
         orderFrontRegardless()
         if let index = view.selected, index < entries.count { placeCard(index) }
+        refreshNotices()
+    }
+
+    // MARK: - 通知の札
+
+    private func toggleNotices() {
+        if notice != nil { closeNotices(animated: true); return }
+        guard let items = view.head?.speak?.items else { return }
+        // 輪の札と同時には出さない。
+        card?.orderOut(nil)
+        card = nil
+        view.selected = nil
+        openNotices(items)
+    }
+
+    /// 開いている間に中身が入れ替わったら描き直す。空になったら閉じる。
+    private func refreshNotices() {
+        guard notice != nil else { return }
+        guard let items = view.head?.speak?.items else { closeNotices(animated: false); return }
+        noticeView.items = items
+        placeNotices(items)
+    }
+
+    private func noticeFrame(_ items: [RailSpeakItem]) -> NSRect {
+        let height = NoticeView.height(for: items)
+        let anchor = view.speakAnchorInWindow().map { convertPoint(toScreen: $0) }
+        let centerY = anchor?.y ?? frame.midY
+        let screenTop = (NSScreen.main?.frame.maxY ?? 900) - 20
+        let y = min(max(centerY - height / 2, 20), screenTop - height)
+        return NSRect(x: frame.minX - NoticeView.width - 8, y: y, width: NoticeView.width, height: height)
+    }
+
+    private func placeNotices(_ items: [RailSpeakItem]) {
+        guard let panel = notice else { return }
+        let target = noticeFrame(items)
+        panel.setFrame(target, display: true)
+        noticeView.frame = NSRect(origin: .zero, size: target.size)
+    }
+
+    private func openNotices(_ items: [RailSpeakItem]) {
+        let container = NSView()
+        container.wantsLayer = true
+        noticeView.items = items
+        container.addSubview(noticeView)
+
+        let panel = NSPanel(
+            contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered, defer: false
+        )
+        panel.level = level
+        panel.collectionBehavior = collectionBehavior
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = true
+        panel.isFloatingPanel = true
+        panel.hidesOnDeactivate = false
+        panel.appearance = NSAppearance(named: .darkAqua)
+        panel.contentView = container
+        notice = panel
+        placeNotices(items)
+
+        // 広がりの中心は、押した通知の印。札の右の縁の上にある。
+        let target = panel.frame
+        let anchor = view.speakAnchorInWindow().map { convertPoint(toScreen: $0) }
+        let centre = NSPoint(
+            x: target.width + 8,
+            y: min(max((anchor?.y ?? target.midY) - target.minY, 0), target.height)
+        )
+        let reach = hypot(target.width + 8, max(centre.y, target.height - centre.y))
+        let mask = CAShapeLayer()
+        mask.frame = container.bounds
+        func circle(_ r: CGFloat) -> CGPath {
+            CGPath(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: r * 2, height: r * 2), transform: nil)
+        }
+        mask.path = circle(reach)
+        container.layer?.mask = mask
+
+        panel.alphaValue = 0
+        panel.orderFrontRegardless()
+        let grow = CABasicAnimation(keyPath: "path")
+        grow.fromValue = circle(8)
+        grow.toValue = circle(reach)
+        grow.duration = 0.34
+        grow.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        mask.add(grow, forKey: "grow")
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.16
+            panel.animator().alphaValue = 1
+        }
+
+        // 外を押したら閉じる。札の中の押しはこのアプリのものなので、ここには来ない。
+        noticeMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown]) { [weak self] _ in
+            DispatchQueue.main.async { self?.closeNotices(animated: true) }
+        }
+    }
+
+    private func closeNotices(animated: Bool) {
+        if let monitor = noticeMonitor { NSEvent.removeMonitor(monitor); noticeMonitor = nil }
+        guard let panel = notice else { return }
+        notice = nil
+        guard animated, let layer = panel.contentView?.layer, let mask = layer.mask as? CAShapeLayer else {
+            panel.orderOut(nil)
+            return
+        }
+        let target = panel.frame
+        let anchor = view.speakAnchorInWindow().map { convertPoint(toScreen: $0) }
+        let centre = NSPoint(x: target.width + 8, y: min(max((anchor?.y ?? target.midY) - target.minY, 0), target.height))
+        let reach = hypot(target.width + 8, max(centre.y, target.height - centre.y))
+        func circle(_ r: CGFloat) -> CGPath {
+            CGPath(ellipseIn: CGRect(x: centre.x - r, y: centre.y - r, width: r * 2, height: r * 2), transform: nil)
+        }
+        CATransaction.begin()
+        CATransaction.setCompletionBlock { panel.orderOut(nil) }
+        let shrink = CABasicAnimation(keyPath: "path")
+        shrink.fromValue = circle(reach)
+        shrink.toValue = circle(8)
+        shrink.duration = 0.22
+        shrink.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        shrink.fillMode = .forwards
+        shrink.isRemovedOnCompletion = false
+        mask.add(shrink, forKey: "shrink")
+        CATransaction.commit()
     }
 
     private func toggleCard(_ index: Int) {
+        closeNotices(animated: false)
         if view.selected == index {
             view.selected = nil
             card?.orderOut(nil)
@@ -1272,7 +1618,7 @@ final class Rail: NSPanel {
                 title: "予定",
                 windows: [],
                 lead: head.plans,
-                notes: ["⌥⌘N で予定を打ち込む"]
+                notes: ["⌥⌘N で予定を打ち込む", "⌥⌘K で暦（←→ で来週も）"]
             )
         } else if index < 0 {
             guard let head = view.head else { return }
@@ -1353,6 +1699,7 @@ final class Rail: NSPanel {
 
     /// 帯を閉じるときと同じで、カードも一緒に引っ込める。
     func hide() {
+        closeNotices(animated: false)
         card?.orderOut(nil)
         card = nil
         view.selected = nil

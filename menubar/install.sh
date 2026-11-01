@@ -28,13 +28,15 @@ set -e
 # so rather than failing.
 cd "$(dirname "$0")"
 APP="$HOME/Applications/IRIS HUD.app"
+BUILD_DIR="$(mktemp -d "${TMPDIR:-/tmp}/iris-hud-build.XXXXXX")"
+trap 'rm -rf "$BUILD_DIR"' EXIT
 
-swiftc -O -o /tmp/iris-hud-build IrisMenuBar.swift Hotkeys.swift Ask.swift Travel.swift Rail.swift Shape.swift Schedule.swift Day.swift Notify.swift main.swift
+swiftc -O -o "$BUILD_DIR/iris-hud" IrisHTTP.swift IrisMenuBar.swift Hotkeys.swift Ask.swift Travel.swift Rail.swift Shape.swift Schedule.swift Day.swift Notify.swift main.swift
 
-pkill -f "IRIS HUD" 2>/dev/null || true
+pkill -x "IRIS HUD" 2>/dev/null || true
 sleep 1
 mkdir -p "$APP/Contents/MacOS"
-mv -f /tmp/iris-hud-build "$APP/Contents/MacOS/IRIS HUD"
+mv -f "$BUILD_DIR/iris-hud" "$APP/Contents/MacOS/IRIS HUD"
 chmod +x "$APP/Contents/MacOS/IRIS HUD"
 cp Info.plist "$APP/Contents/Info.plist"
 
@@ -59,5 +61,9 @@ else
 fi
 codesign -dv "$APP" 2>&1 | grep -E "Identifier|Info.plist"
 codesign -d --requirements - "$APP" 2>&1 | grep designated
-open -a "$APP"
+if [ "${IRIS_OPEN_AFTER_INSTALL:-0}" = "1" ]; then
+  open -a "$APP" --args --open-iris
+else
+  open -a "$APP"
+fi
 echo "installed"

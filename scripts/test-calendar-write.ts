@@ -51,14 +51,14 @@ async function main() {
   {
     const { client, sent } = harness();
     const out = await client.createEvent({
-      calendarId: 'a@b.com', title: 'ガウス',
+      calendarId: 'a@b.com', title: 'コスモ',
       start: '2026-09-08T15:00', end: '2026-09-08T16:00',
       allDay: false, location: '職場', timeZone: 'Asia/Tokyo',
     });
     const req = sent[0];
     check('POST で送る', req.method === 'POST', req.method);
     check('カレンダーIDが URL に入る', req.url.includes(encodeURIComponent('a@b.com')), req.url);
-    check('題名', req.body.summary === 'ガウス');
+    check('題名', req.body.summary === 'コスモ');
     check('始まりは秒まで付ける', req.body.start.dateTime === '2026-09-08T15:00:00', req.body.start);
     check('終わり', req.body.end.dateTime === '2026-09-08T16:00:00', req.body.end);
     check('場所', req.body.location === '職場');

@@ -64,7 +64,7 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
         let content = NSView()
         contentView = content
 
-        field.placeholderString = "予定を一行で（例: 来週の火曜15時からガウス）"
+        field.placeholderString = "予定を一行で（例: 来週の火曜15時からコスモ）"
         field.font = NSFont.systemFont(ofSize: 14)
         field.delegate = self
         field.isBordered = false
@@ -207,9 +207,32 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
 
     // MARK: - 解釈
 
+    /**
+     * 打つのをやめたら、自分で読み取る。
+     *
+     * Return を押さないと何も起きない作りで、**押すことを誰も教えていなかった**。打ち終えても
+     * 下書きが出ず、「登録」は灰色のまま —— 壊れているように見える（利用者「登録押せない」）。
+     * 一秒半、手が止まったら読み取る。確かめてから入れる段は変わらない。
+     */
+    private var pause: Timer?
+    func controlTextDidChange(_ obj: Notification) {
+        draft = nil
+        commit.isEnabled = false
+        summary.stringValue = ""
+        subject.stringValue = ""
+        notes.stringValue = ""
+        let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        pause?.invalidate()
+        guard text.count >= 6 else { status.stringValue = text.isEmpty ? "" : "続けて打ってください（Return でも読み取ります）"; return }
+        status.stringValue = "打ち終えたら、自動で読み取ります（Return ですぐ読み取り）"
+        pause = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: false) { [weak self] _ in self?.interpret() }
+    }
+
     func control(_ control: NSControl, textView: NSTextView, doCommandBy selector: Selector) -> Bool {
         if selector == #selector(NSResponder.insertNewline(_:)) {
-            interpret()
+            pause?.invalidate()
+            // 下書きが出ていれば、Return は登録。まだなら、読み取り。
+            if draft != nil, commit.isEnabled { register() } else { interpret() }
             return true
         }
         return false
@@ -218,6 +241,7 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
     private func interpret() {
         let text = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, !working else { return }
+        pause?.invalidate()
         working = true
         status.stringValue = "読み取り中…"
         commit.isEnabled = false
@@ -261,7 +285,13 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
             self.notes.stringValue = lines.joined(separator: "\n")
             self.notes.textColor = doubts.isEmpty ? Palette.Board.subtle : Palette.Board.amber
 
-            self.status.stringValue = self.places.isEmpty ? "入れる先が読めていません。" : ""
+            var why = ""
+            if let name = body["suggestedCalendar"] as? String,
+               let i = self.places.firstIndex(where: { $0.name == name }) {
+                self.targets.selectItem(at: i)
+                why = (body["hint"] as? String) ?? ""
+            }
+            self.status.stringValue = self.places.isEmpty ? "入れる先が読めていません。" : why
             self.commit.isEnabled = !self.places.isEmpty
         }
     }
@@ -318,7 +348,7 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
     private func get(_ path: String, done: @escaping ([String: Any]?) -> Void) {
         var request = URLRequest(url: URL(string: "http://127.0.0.1:3002" + path)!)
         request.timeoutInterval = 20
-        URLSession.shared.dataTask(with: request) { data, _, _ in
+        IrisHTTP.dataTask(with: request) { data, _, _ in
             let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             DispatchQueue.main.async { done(body ?? nil) }
         }.resume()
@@ -331,7 +361,7 @@ final class Schedule: NSPanel, NSTextFieldDelegate {
         request.httpBody = try? JSONSerialization.data(withJSONObject: payload)
         // 模型に一行読ませる往復があるので、聞く窓と同じだけ待つ。
         request.timeoutInterval = 120
-        URLSession.shared.dataTask(with: request) { data, _, _ in
+        IrisHTTP.dataTask(with: request) { data, _, _ in
             let body = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             DispatchQueue.main.async { done(body ?? nil) }
         }.resume()

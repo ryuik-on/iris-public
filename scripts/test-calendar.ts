@@ -14,7 +14,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import {
-  readCalendarCache, CACHE_STALE_AFTER_MS, CalendarUnavailableError, upcomingEvents,
+  CALENDAR_BACKGROUND_OBSERVE_INTERVAL_MS, readCalendarCache, CACHE_STALE_AFTER_MS, CalendarUnavailableError, upcomingEvents,
 } from '../server/services/calendar.js';
 
 let passed = 0;
@@ -40,6 +40,9 @@ function writeCache(dir: string, body: any, name = 'calendar.json'): string {
 }
 
 function main() {
+  section('Background observation cadence');
+  eq('periodic calendar observation runs hourly', CALENDAR_BACKGROUND_OBSERVE_INTERVAL_MS, 60 * 60_000);
+
   const dir = mkdtempSync(join(tmpdir(), 'iris-cal-'));
 
   try {

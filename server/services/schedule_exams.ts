@@ -54,6 +54,8 @@ export interface ScheduledItem {
 
 export interface ScheduleLectureRead {
   lectures: ScheduledItem[];
+  /** 学士入学生向けとして除いた件数。**除いたことを黙らない。** */
+  notApplicable?: number;
   /**
    * 試験。**同じ紙の、同じ抽出結果から。**
    *
@@ -116,6 +118,22 @@ export function newestScheduleFile(files: string[]): string | undefined {
   return [...files].sort(by)[files.length - 1];
 }
 
+/**
+ * 学士入学生だけが受ける授業か。
+ *
+ * 日程表には「動物実験の基礎（学士）1〜16」のように、学士入学の学生向けの行が混ざる。
+ * 利用者は学士入学ではないので受講対象ではない（2026-10-01）。カレンダーに入れず、
+ * 突き合わせでも「欠け」にしない。
+ *
+ * 見分けるのは題名に**学士の印がある行だけ**。抽出は題名の途中で空白を挟む
+ * （「（学 士）」）ので、空白は無視して読む。「学士編入学生は7時限履修のため不可」は
+ * 学士の学生に**注意を言っている**行で、学士向けの授業ではないので除かない。
+ */
+export function isGakushiOnly(title: string): boolean {
+  const t = String(title).replace(/\s+/g, '');
+  return /（学士）/.test(t) || /学士入学/.test(t);
+}
+
 export function readScheduleLectures(root: string): ScheduleLectureRead {
   const dir = join(root, '.iris', 'schedule');
   const none = (reason: string): ScheduleLectureRead => ({
@@ -153,7 +171,9 @@ export function readScheduleLectures(root: string): ScheduleLectureRead {
           startBasis: typeof l.startBasis === 'string' ? l.startBasis : null,
           span: typeof l.span === 'number' ? l.span : null,
         }));
-    const lectures = shape(parsed.lectures);
+    const allLectures = shape(parsed.lectures);
+    const lectures = allLectures.filter((l) => !isGakushiOnly(l.title));
+    const notApplicable = allLectures.length - lectures.length;
     /*
      * 試験の欄が無い抽出結果でも、授業の突き合わせは続ける。**片方が取れて
      * いないことは、もう片方を止める理由にならない。**
@@ -161,6 +181,7 @@ export function readScheduleLectures(root: string): ScheduleLectureRead {
     const exams = Array.isArray(parsed?.exams) ? shape(parsed.exams) : [];
     return {
       lectures,
+      notApplicable,
       exams,
       gridFaults: Array.isArray(parsed?.gridFaults) ? parsed.gridFaults : [],
       source,

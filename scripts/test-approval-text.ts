@@ -35,8 +35,16 @@ const long = describeApproval('remember', { content: 'あ'.repeat(300), provenan
 eq('長い中身は縮める', long.summary.length < 200, true);
 
 const unknown = describeApproval('mystery_tool', { a: 1 });
-eq('知らない道具には説明を作らない', unknown.summary.includes('技術情報'), true);
+eq('知らない道具には説明を作らない', unknown.summary.includes('操作の詳細'), true);
 eq('知らない道具は事実も出さない', unknown.facts.length, 0);
+
+// 予定の削除は、消すものが一件ずつ画面に出る
+const del = describeApproval('delete_calendar_events', { calendarId: 'g', reason: '日程表に無い', items: [{ date: '2026-10-16', title: '病理学II予備' }, { date: '2026-10-27', title: '薬理学追試験' }] });
+eq('the delete screen is a question and says how many', del.heading, '予定を消しますか？');
+eq('and lists every event by date and title', [del.summary.includes('2026-10-16 「病理学II予備」'), del.summary.includes('2026-10-27 「薬理学追試験」'), del.summary.includes('2 件')], [true, true, true]);
+eq('and says a record is kept, and why', [del.summary.includes('控え'), del.summary.includes('日程表に無い')], [true, true]);
+const upd = describeApproval('update_calendar_event', { date: '2026-10-21', title: '愛楽園見学実習', newEnd: '2026-10-21T17:20' });
+eq('an edit names the event and only the changed field', [upd.summary.includes('愛楽園見学実習'), upd.summary.includes('終了を 2026-10-21T17:20'), upd.summary.includes('題名')], [true, true, false]);
 
 console.log(`\nApproval text: ${passed} passed, ${failed} failed`);
 if (failed) { for (const f of failures) console.log('  - ' + f); process.exit(1); }

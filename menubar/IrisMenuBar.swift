@@ -201,15 +201,18 @@ struct Proactive: Decodable {
 /**
  * IRIS から話しかけた会話への手がかり。レールに印を出し、押せばその会話を開く。
  *
- * 中身（文面）は持たない。**レールには入らないし、入れると読めた気にさせる。**
- * 話は押した先の会話で読む。
+ * 中身は頭の数行だけ（`preview`）。レールの 52 ポイントには入らないので、押すと
+ * 広がる札に出す。話の全文は、札の行を押した先の会話で読む。
  */
 struct OpenerRef: Decodable {
     let conversationId: String
     let ruleId: String
     let title: String?
-    /// レールに出す二文字（`期限` など）。サーバが決める。
+    /// 種類を表す二文字。サーバが決める。レールには出さず、札の中身にも使わない。
     let label: String
+    /// 一言目の中身の頭の数行。広がる札に出す。
+    let preview: String?
+    let createdAt: String?
 }
 
 struct CalendarEvent: Decodable {
@@ -233,6 +236,21 @@ struct CalendarEvent: Decodable {
 
 struct Calendar: Decodable {
     let events: [CalendarEvent]
+    /// どの入り口が答えたか（Google・iCloud・写し）。無ければ、一つの入り口の答え。
+    let contributions: [Contribution]?
+    struct Contribution: Decodable { let source: String }
+
+    /**
+     * 予定の入り口の Google が答えた読みか。
+     *
+     * 授業の予定は Google にある。Google が答えない回（通信が切れた直後、時間切れ）は、
+     * 写しだけが返って、予定が空に見える。それを「予定が無い」として受け取ると、レールの
+     * 予定の行が消える（2026-10-17、20:47）。答えていない回は、受け取らない。
+     */
+    var complete: Bool {
+        guard let contributions else { return true }
+        return contributions.contains { $0.source == "google" }
+    }
 }
 
 /// Everything the strip needs, in one value.
@@ -492,6 +510,13 @@ struct DevTask: Decodable {
      * 同じ「20日」でも、次にやることが違う。
      */
     let runCount: Int?
+    /// 始められずに待っているとき、その理由。条件が整えば IRIS が自分で始める。
+    let waiting: DevWaiting?
+}
+
+struct DevWaiting: Decodable {
+    let reason: String
+    let since: String
 }
 
 /**
@@ -705,6 +730,34 @@ final class Reader {
     private var focusAt: Date?
     var focus: Focus? { focusCache }
 
+    /// 前に読めた「IRIS から」の会話。読めなかった回にレールの印を消さないため。
+    private var lastOpeners: [OpenerRef] = []
+
+    /**
+     * 読めなかった回は、直前に読めた値を使う。ただし十分間まで。
+     *
+     * 巡回は十数本を順に読む。サーバーが数秒詰まると（ビルドやテストが走っている間、
+     * 起動の直後）、その回の分が全部「読めなかった」になり、**予定の行が消え、使用量が
+     * 「週 ―」になり、通知の行まで消えて、次の巡回でまた戻る**（利用者「定期的に表示が
+     * 消える」2026-10-01）。空にするのは、本当に空のときだけ。古い値をいつまでも出すのも
+     * 嘘なので、十分たったら諦める。使用量は値自身が「N 分前」を持っているので、
+     * 古さは札に出る。
+     */
+    private struct Held<T> {
+        private var value: T?
+        private var at = Date.distantPast
+        mutating func use(_ fresh: T?, maxAge: TimeInterval = 600) -> T? {
+            if let fresh { value = fresh; at = Date(); return fresh }
+            return Date().timeIntervalSince(at) < maxAge ? value : nil
+        }
+    }
+    private var heldEvents = Held<[CalendarEvent]>()
+    private var heldBudget = Held<Budget>()
+    private var heldSessions = Held<[Session]>()
+    private var heldWeather = Held<Weather>()
+    private var heldExam = Held<NextExam>()
+    private var heldUsage = Held<CliUsage>()
+
     /// 日程表との食い違い。予定の行に添えるので、`Everything` に載せる。
     private var lecturesCache: LectureDivergence?
     private var lecturesAt: Date?
@@ -786,15 +839,24 @@ final class Reader {
                                         // 数えるだけでなく、**中身を持ち歩く。**
                                         // IRIS の側から声をかけるのに要る。
                                         suggestionList: proactive?.pending ?? [],
-                                        openers: proactive?.openers ?? [],
-                                        events: calendar?.events ?? [],
-                                        budget: budget,
-                                        sessions: sessions?.sessions ?? [],
-                                        weather: weather,
+                                        /*
+                                         * 読めなかった回は、前に読めた分を使う。空にすると
+                                         * 一回の取りこぼしでレールの印が消えて、次の巡回で
+                                         * また出る（利用者「講義のボタンが消えたりする」）。
+                                         * **消えるのは返事をしたとき**で、読めなかったときではない。
+                                         */
+                                        openers: {
+                                            if let fresh = proactive?.openers { self.lastOpeners = fresh; return fresh }
+                                            return self.lastOpeners
+                                        }(),
+                                        events: self.heldEvents.use(calendar.flatMap { $0.complete ? $0.events : nil }, maxAge: 1800) ?? [],
+                                        budget: self.heldBudget.use(budget),
+                                        sessions: self.heldSessions.use(sessions?.sessions) ?? [],
+                                        weather: self.heldWeather.use(weather),
                                         places: places,
-                                        exam: exam,
+                                        exam: self.heldExam.use(exam),
                                         road: road,
-                                        usage: usage,
+                                        usage: self.heldUsage.use(usage),
                                         backup: backup,
                                         fdp: self.fdp,
                                         dev: self.dev,
@@ -830,7 +892,7 @@ final class Reader {
         guard let url = URL(string: "http://127.0.0.1:3002/api/dev/tasks") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        URLSession(configuration: .ephemeral).dataTask(with: request) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: request) { [weak self] data, _, _ in
             /**
              * 応答は `{"tasks":[...]}`。**裸の配列ではない。**
              *
@@ -852,7 +914,7 @@ final class Reader {
         var request = URLRequest(url: url)
         // 表を読みに行くので長い。それでも待つのはこの取得だけ。
         request.timeoutInterval = 60
-        URLSession(configuration: .ephemeral).dataTask(with: request) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: request) { [weak self] data, _, _ in
             guard let data, let decoded = try? JSONDecoder().decode(Focus.self, from: data) else { return }
             DispatchQueue.main.async { self?.focusCache = decoded }
         }.resume()
@@ -864,7 +926,7 @@ final class Reader {
         guard let url = URL(string: "http://127.0.0.1:3002/api/lectures/divergence?days=14") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 60
-        URLSession(configuration: .ephemeral).dataTask(with: request) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: request) { [weak self] data, _, _ in
             guard let data else { trace("lectures: 応答なし"); return }
             guard let decoded = try? JSONDecoder().decode(LectureDivergence.self, from: data) else {
                 // **読めなかったことを黙らない。**dev の一覧で同じ失敗をして、
@@ -883,7 +945,7 @@ final class Reader {
         guard let url = URL(string: "http://127.0.0.1:3002/api/fdp/tasks") else { return }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        URLSession(configuration: .ephemeral).dataTask(with: request) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: request) { [weak self] data, _, _ in
             guard let data, let decoded = try? JSONDecoder().decode(FdpTasks.self, from: data) else { return }
             DispatchQueue.main.async { self?.fdpCache = decoded }
         }.resume()
@@ -896,7 +958,7 @@ final class Reader {
         var request = URLRequest(url: url)
         // Its own timeout: the shared 4-second one would never see this finish.
         request.timeoutInterval = 90
-        URLSession(configuration: .ephemeral).dataTask(with: request) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: request) { [weak self] data, _, _ in
             guard let data, let decoded = try? JSONDecoder().decode(AllowanceBreakdown.self, from: data) else { return }
             DispatchQueue.main.async { self?.breakdownCache = decoded }
         }.resume()
@@ -907,7 +969,7 @@ final class Reader {
             done(nil)
             return
         }
-        session.dataTask(with: url) { data, _, _ in
+        IrisHTTP.dataTask(with: URLRequest(url: url, timeoutInterval: 4)) { data, _, _ in
             // `T.self` rather than the captured parameter: a metatype crossing
             // into the completion handler is not Sendable, and capturing it
             // warns for a value that is already known at the call site.
@@ -1220,6 +1282,7 @@ final class CoreView: NSView {
     private var buffer: CGContext?
     private var scratch: CGContext?
     private var timer: Timer?
+    private var tick = 0
     /// 色の帯を回すための時計。粒の位置とは別に持つ（止めても色は止まる）。
     private var drift: CGFloat = 0
     private var pixels: Int = 0
@@ -1250,6 +1313,19 @@ final class CoreView: NSView {
             // Paused while the band is not on screen. An animation nobody is
             // looking at is pure cost.
             if self.window?.occlusionState.contains(.visible) == false { return }
+            /*
+             * 静かなときは、描く回数を減らす（2026-10-18、HUD が常時 25% ほどの CPU を使っていた）。
+             * 処理中（`pace` が上がっているとき）は毎秒 20 回。何もしていないときは 10 回、
+             * 何も触らないまま 1 分たったら 5 回。直径 36 ポイントの核では、動きの違いは見えない。
+             */
+            self.tick &+= 1
+            let stride: Int
+            if self.pace > 1.05 { stride = 1 }
+            else {
+                let idle = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: ~0)!)
+                stride = idle > 60 ? 4 : 2
+            }
+            if self.tick % stride != 0 { return }
             self.advance()
             self.needsDisplay = true
         }
@@ -1352,6 +1428,23 @@ final class CoreView: NSView {
         scratch = make()
     }
 
+    /**
+     * 粒の色を、段階に丸めて使い回す。
+     *
+     * 粒ごと・一枚ごとに、色を作って色空間を変換していた（サンプルで、CoreGraphics の色の変換が
+     * 上位に並んでいた）。熱は 48 段、濃さは 24 段にすれば、見た目の差は無く、色は高々 1152 通り。
+     */
+    private static var colourCache: [Int: CGColor] = [:]
+    fileprivate static func cachedColour(heat: CGFloat, alpha: CGFloat) -> CGColor {
+        let h = Int((min(1, max(0, heat)) * 47).rounded())
+        let a = Int((min(1, max(0, alpha)) * 23).rounded())
+        let key = h * 32 + a
+        if let hit = colourCache[key] { return hit }
+        let colour = ink(heat: CGFloat(h) / 47).withAlphaComponent(CGFloat(a) / 23).cgColor
+        colourCache[key] = colour
+        return colour
+    }
+
     fileprivate func advance() {
         ensureBuffers()
         guard let buffer, let scratch else { return }
@@ -1432,7 +1525,7 @@ final class CoreView: NSView {
             let wave = 0.5 + 0.5 * sin(p.angle * 2 - drift * 0.34 + r * 3.4)
                 * (0.6 + 0.4 * sin(p.angle * 3 + drift * 0.19))
             let heat = min(1, max(0, wave * 0.70 + lit * 0.26 + (1 - r) * 0.16 - 0.04))
-            buffer.setFillColor(Self.ink(heat: heat).withAlphaComponent(alpha).cgColor)
+            buffer.setFillColor(Self.cachedColour(heat: heat, alpha: alpha))
             buffer.fillEllipse(in: CGRect(x: at.x - 1.0, y: at.y - 1.0, width: 2.0, height: 2.0))
         }
 
@@ -1668,7 +1761,7 @@ func lines(for snapshot: Snapshot) -> Lines {
              * A calendar title is arbitrary text, and quoting is what keeps it
              * from running into the sentence around it — 「歯医者 15時まで」 needs
              * the marks. But a title this machine can turn into an address is
-             * a place, and a place is a word: 明日は 15:30 からガウス。 reads as
+             * a place, and a place is a word: 明日は 15:30 からコスモ。 reads as
              * language rather than as a field with a value in it.
              */
             func name(_ title: String) -> String {
@@ -2989,6 +3082,7 @@ final class Dashboard: NSPanel {
             case let .url(url):
                 NSWorkspace.shared.open(url)
             case let .app(path):
+                if openIrisApplication(path) { return }
                 /**
                  * 走っているものがあれば、それを前に出す。無ければ開く。
                  *
@@ -4421,7 +4515,12 @@ final class Face: NSView {
          * 一度も動いていないものを「今」と書いたら、それは嘘になる。
          */
         let day = 86_400.0
-        for task in (all.dev ?? []) where task.status == "in_progress" {
+        /*
+         * 進行中に加えて、**待機中**も並べる。進行中しか見ていなかったので、
+         * 始められずに待っているタスクは盤のどこにも出ず、利用者からは
+         * 「どうなったのか分からない」状態だった（2026-09-30）。
+         */
+        for task in (all.dev ?? []) where task.status == "in_progress" || task.waiting != nil {
             guard seen.insert(task.title).inserted else { continue }
             var age = ""
             var ageMinutes = 0
@@ -4440,7 +4539,8 @@ final class Face: NSView {
             }
             rows.append(WorkRow(
                 icon: "Iris", title: task.title,
-                detail: clip(task.goal ?? "", 30),
+                // 待っているなら、**何を待っているか**を。作業内容より先に要る。
+                detail: task.waiting.map { clip("待機中：\($0.reason)", 30) } ?? clip(task.goal ?? "", 30),
                 elapsed: age,
                 waited: ageMinutes,
                 // 誰も手を付けていないまま日が経っているものは、見に行くべき。
@@ -4451,7 +4551,9 @@ final class Face: NSView {
                  * 走った回数を見ていなかったので、**二度走って放置された
                  * ものが「手を付けていない」と表示されていた。**
                  */
-                state: (task.activeRuns ?? 0) > 0
+                state: task.waiting != nil
+                    ? .blocked
+                    : (task.activeRuns ?? 0) > 0
                     ? .running
                     : ((task.runCount ?? 0) > 0 ? .paused : .untouched),
                 /**
@@ -5017,10 +5119,33 @@ final class Controller: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// 続けて読めなかった回数。一回の取りこぼしで、レールを空にしない。
+    private var missedPolls = 0
+
     private func refresh() {
         reader.read { [weak self] snapshot in
             guard let self else { return }
-            self.latest = snapshot
+            if case .ready = snapshot {
+                self.missedPolls = 0
+                self.latest = snapshot
+            } else if !self.everRead {
+                self.latest = snapshot
+            } else {
+                /*
+                 * 読めなかった回は、**前に読めた画面を出し続ける。**
+                 *
+                 * IRIS を作り直して再起動するたびに、レールが空（週 —、時計と知らせが消える）
+                 * になり、次の巡回（四十五秒後）まで戻らなかった（利用者「またレーンこうなってる」）。
+                 * サーバーが数秒忙しいだけで、一回の読みは四秒で切れる。三回続けて読めないときに
+                 * はじめて、本当に届いていないとして空にする。それまでは五秒後に聞き直す。
+                 */
+                self.missedPolls += 1
+                if self.missedPolls >= 3 { self.latest = snapshot }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
+                    guard let self, self.missedPolls > 0, self.missedPolls < 3 else { return }
+                    self.refresh()
+                }
+            }
             if case let .ready(all) = snapshot {
                 /*
                  * 先回りの提案を、**こちらから届ける。**
@@ -5320,19 +5445,7 @@ extension Controller: NSMenuDelegate {
      * 必ず一致する。
      */
     @objc private func openIris() {
-        let app = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Applications/IRIS.app")
-        if let identifier = Bundle(url: app)?.bundleIdentifier,
-           let running = NSRunningApplication
-               .runningApplications(withBundleIdentifier: identifier).first {
-            running.activate(options: [.activateAllWindows])
-            return
-        }
-        if FileManager.default.fileExists(atPath: app.path) {
-            NSWorkspace.shared.openApplication(at: app, configuration: .init())
-            return
-        }
-        if let url = URL(string: "http://127.0.0.1:3002") { NSWorkspace.shared.open(url) }
+        if let url = URL(string: "http://127.0.0.1:3002/") { openInIris(url) }
     }
 
     @objc private func reloadNow() { refresh() }
@@ -5409,6 +5522,42 @@ extension Controller: NSMenuDelegate {
      * hotkey wins — the browser simply never sees it. Say so rather than let it
      * be discovered.
      */
+    /*
+     * 預けて、誰かが読むのを待ち、読まれなければアプリを前に出す。会話を開くのも
+     * 通知センターも週の暦も同じ手順（預ける中身だけが違う）。
+     */
+    private func deposit(_ body: [String: Any]) {
+        guard let url = URL(string: "http://127.0.0.1:3002/api/ui/open") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        request.timeoutInterval = 3
+        IrisHTTP.dataTask(with: request) { _, _, _ in
+            /*
+             * 預けたら、まず誰かが読むのを待つ。Chrome のタブで見ている人は
+             * タブが読んで切り替える。**それなのに IRIS.app を前に出すと、
+             * 見ていない画面が前に来る。** 一秒半たっても残っているときだけ
+             * アプリを前に出す。
+             */
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                guard let peek = URL(string: "http://127.0.0.1:3002/api/ui/open?peek=1") else {
+                    self.openIris(); return
+                }
+                var look = URLRequest(url: peek)
+                look.timeoutInterval = 3
+                IrisHTTP.dataTask(with: look) { data, _, _ in
+                    let json = data.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+                    let pending = json?["conversationId"] as? String ?? json?["view"] as? String
+                    // 読めなかったときも前に出す。何も起きないよりよい。
+                    if pending != nil || data == nil {
+                        DispatchQueue.main.async { self.openIris() }
+                    }
+                }.resume()
+            }
+        }.resume()
+    }
+
     private func bindKeys() {
         let optionCommand = optionKey | cmdKey
         hotkeys.bind(kVK_ANSI_I, optionCommand, "⌥⌘I") { [weak self] in self?.raiseIris() }
@@ -5418,14 +5567,26 @@ extension Controller: NSMenuDelegate {
         hotkeys.bind(kVK_ANSI_R, optionCommand, "⌥⌘R") { [weak self] in self?.toggleRail() }
         hotkeys.bind(kVK_ANSI_N, optionCommand, "⌥⌘N") { [weak self] in self?.openSchedule() }
         /*
-         * 一日の形。`K` は「今日」。
+         * 暦は `⌥⌘K` の一つ。`K` は「今日」。
+         *
+         * 一日の形（小さな窓）と週の暦（`⌥⌘E`）を別のキーにしていた。「統一して
+         * いいのでは、⌥⌘K にまとめて」（利用者、2026-10-01）。週の暦は今日の帯と
+         * 同じ向きの倍率違いで、今日の列がそのまま一日の形なので、**窓の側を
+         * 無くして一つにした**。窓（`toggleDay`）のコードは残してある。
          *
          * `T` を避けた —— Finder と Mail の**ツールバーの表示切り替え**が
          * `⌥⌘T` で、大域の hotkey は前面のアプリより先に取るので、あちらが
          * 二度と効かなくなる。`K` は `⌘K` こそ埋まっているものの
          * （Slack の切り替え、VS Code の連鎖）、`⌥⌘K` はどれも取っていない。
          */
-        hotkeys.bind(kVK_ANSI_K, optionCommand, "⌥⌘K") { [weak self] in self?.toggleDay() }
+        hotkeys.bind(kVK_ANSI_K, optionCommand, "⌥⌘K") { [weak self] in self?.deposit(["view": "calendar"]) }
+        // 知らない語の読み方：範囲をドラッグすると、画面の文字を機械の中で読んで教える。
+        // `Y` は読み（よみ）。Safari の `⌥⌘L`（ダウンロード）などを避けた。
+        hotkeys.bind(kVK_ANSI_Y, optionCommand, "⌥⌘Y") { [weak self] in
+            guard let self else { return }
+            _ = self.makeAsk()
+            self.ask?.readScreen()
+        }
         /**
          * Tap to type, hold to speak.
          *
@@ -5461,19 +5622,9 @@ extension Controller: NSMenuDelegate {
      * for the one before, and the last always works.
      */
     @objc private func raiseIris() {
-        let running = NSWorkspace.shared.runningApplications.first {
-            $0.localizedName == "IRIS" && $0.bundleIdentifier != Bundle.main.bundleIdentifier
-        }
-        if let running {
-            running.activate(options: [.activateAllWindows])
-            return
-        }
-        let installed = URL(fileURLWithPath: NSHomeDirectory() + "/Applications/IRIS.app")
-        if FileManager.default.fileExists(atPath: installed.path) {
-            NSWorkspace.shared.openApplication(at: installed, configuration: .init())
-            return
-        }
-        if let url = URL(string: "http://127.0.0.1:3002") { NSWorkspace.shared.open(url) }
+        // Reopening a window alone keeps an expired cookie after a restart.
+        // Every entry point obtains a fresh one-use launch ticket.
+        openIris()
     }
 
     /**
@@ -5579,7 +5730,7 @@ extension Controller: NSMenuDelegate {
     private func waitUntilListening(attempt: Int) {
         guard talking, attempt < 25 else { return }
         guard let url = URL(string: "http://127.0.0.1:3002/api/speech/status") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: url) { [weak self] data, _, _ in
             DispatchQueue.main.async {
                 guard let self, self.talking else { return }
                 let body = data.flatMap {
@@ -5654,7 +5805,7 @@ extension Controller: NSMenuDelegate {
             return
         }
         guard let url = URL(string: "http://127.0.0.1:3002/api/speech/voice") else { return }
-        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+        IrisHTTP.dataTask(with: url) { [weak self] data, _, _ in
             DispatchQueue.main.async {
                 guard let self else { return }
                 let body = data.flatMap {
@@ -5706,7 +5857,7 @@ extension Controller: NSMenuDelegate {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession.shared.dataTask(with: request).resume()
+        IrisHTTP.dataTask(with: request).resume()
     }
 
     /**
@@ -5747,8 +5898,24 @@ extension Controller: NSMenuDelegate {
         schedule?.present()
     }
 
+    /// サイドチャットを作り、窓の中のショートカットボタンに、他のキーと同じ働きをつなぐ。
+    @discardableResult
+    private func makeAsk() -> Ask {
+        if let ask { return ask }
+        let panel = Ask()
+        panel.shortcuts = [
+            (title: "IRIS を開く", hint: "⌥⌘I", run: { [weak self] in self?.raiseIris() }),
+            (title: "予定を登録", hint: "⌥⌘N", run: { [weak self] in self?.openSchedule() }),
+            (title: "カレンダー", hint: "⌥⌘K", run: { [weak self] in self?.deposit(["view": "calendar"]) }),
+            (title: "盤", hint: "⌥⌘D", run: { [weak self] in self?.toggleBoard() }),
+            (title: "レール", hint: "⌥⌘R", run: { [weak self] in self?.toggleRail() }),
+        ]
+        ask = panel
+        return panel
+    }
+
     @objc private func openAsk() {
-        if ask == nil { ask = Ask() }
+        makeAsk()
         // A voice answer waiting to be read opens straight to it.
         if ask?.isVisible != true, ask?.hasHeld == true {
             ask?.presentHeld()
@@ -5837,12 +6004,19 @@ extension Controller: NSMenuDelegate {
             plans: events.isEmpty ? ["この先の予定はありません。"] : events.map { $0.line },
             nextPlan: events.first?.clock,
             /*
-             * IRIS から話しかけて、まだ返事の無いもの。**一番新しい一件**を押す先にする。
+             * IRIS から話しかけて、まだ返事の無いもの。押すたびに新しい順に開く。
              * 数は添える —— 二件あるのに一件に見えると、残りに気づかない。
              */
-            speak: all.openers.first.map {
-                RailSpeak(label: $0.label, conversationId: $0.conversationId, count: all.openers.count)
-            }
+            // 空でも出す。0 件のときは薄く出し、押すと通知センターへ行ける。行ごと消すと、
+            // 通知センターへの入口がレールから無くなる（2026-10-01）。
+            speak: RailSpeak(
+                items: all.openers.map {
+                    RailSpeakItem(
+                        label: $0.label, conversationId: $0.conversationId,
+                        title: $0.title ?? "IRIS から", preview: $0.preview ?? "", createdAt: $0.createdAt
+                    )
+                }
+            )
         )
     }
 
@@ -6066,11 +6240,15 @@ extension Controller: NSMenuDelegate {
          * IRIS から話しかけた会話を開く。机の IRIS に URL を渡すので、開いている
          * 窓がそのまま使われる（`openInIris`）。
          */
-        panel.onSpeak = { id in
-            let escaped = id.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? id
-            guard let url = URL(string: "http://127.0.0.1:3002/?conversation=\(escaped)") else { return }
-            openInIris(url)
-        }
+        /*
+         * URL は渡さない。**渡すと、開いている IRIS があっても毎回新しい窓が
+         * 生える**（利用者、2026-09-30。盤の行で前に直したのと同じ間違い）。
+         * 開いてほしい会話をサーバに預けてから、開いている IRIS を前に出す。
+         * 前に出た画面が預かりものを読んで開く。預け終わってから前に出すのは、
+         * 先に前に出すと画面が読みに来たときにまだ何も無いから。
+         */
+        panel.onSpeak = { [weak self] id in self?.deposit(["conversationId": id]) }
+        panel.onCenter = { [weak self] in self?.deposit(["view": "center"]) }
         panel.onReload = { [weak self] in self?.refreshUsage() }
         panel.onBoard = { [weak self] in self?.toggleBoard() }
         /**
@@ -6079,6 +6257,7 @@ extension Controller: NSMenuDelegate {
          * 盤の行と同じ扱い。**開いているアプリの二枚目を作らない。**
          */
         panel.onOpenApp = { path in
+            if openIrisApplication(path) { return }
             let url = URL(fileURLWithPath: path)
             if let identifier = Bundle(url: url)?.bundleIdentifier,
                let running = NSRunningApplication
@@ -6272,7 +6451,21 @@ final class EndedLedger {
  * その窓で開く。実測 2026-09-11：`open -a IRIS.app <url>` で動いている
  * Web App プロセスに届いた。
  */
+private func openIrisApplication(_ path: String) -> Bool {
+    guard URL(fileURLWithPath: path).standardizedFileURL.path == NSHomeDirectory() + "/Applications/IRIS.app",
+          let root = URL(string: "http://127.0.0.1:3002/") else { return false }
+    openInIris(root)
+    return true
+}
+
 func openInIris(_ url: URL) {
+    IrisHTTP.launch(url) { authorized in
+        guard let authorized else { openAuthorizedInIris(url); return }
+        openAuthorizedInIris(authorized)
+    }
+}
+
+private func openAuthorizedInIris(_ url: URL) {
     let installed = URL(fileURLWithPath: NSHomeDirectory() + "/Applications/IRIS.app")
     guard FileManager.default.fileExists(atPath: installed.path) else {
         NSWorkspace.shared.open(url)

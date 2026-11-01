@@ -35,7 +35,7 @@ export interface FreeDay {
    * 空きが無い、または狭い理由。
    *
    * An all-day event blocks the day, and saying which one lets the reader
-   * overrule it — 「琉大祭だから空いていない」 is something they can judge, while
+   * overrule it — 「大学祭だから空いていない」 is something they can judge, while
    * an empty line is not.
    */
   note: string | null;

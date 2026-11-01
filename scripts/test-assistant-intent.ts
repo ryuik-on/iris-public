@@ -21,6 +21,8 @@ const tools: Tool[] = [
 async function main() {
   assert.equal(tools[0].riskLevel, RiskLevel.WRITE);
   assert.match(CONFIG.systemInstruction, /登録済みを着手済み/);
+  // 承認の画面が確認を取る道具は、文章で先に尋ねない（「いいよ」のあとにもう一度ボタン、は二重）。
+  assert.match(CONFIG.systemInstruction, /承認の画面が出る道具.*そのまま呼んでください/s);
   if (!process.argv.includes('--live')) {
     console.log('PASS: approval retained. Use --live for model intent checks (API usage).');
     return;

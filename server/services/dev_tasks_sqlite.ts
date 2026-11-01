@@ -216,6 +216,11 @@ export class SqliteDevTaskStore {
     return this.getRun(id)!;
   }
 
+  /** 実際に使ったモデル。始まりでは分からず、終わりに転記から分かる。 */
+  setRunModel(id: string, model: string): void {
+    this.db.prepare(`UPDATE agent_runs SET model = ?, updated_at = ? WHERE id = ?`).run(model, new Date().toISOString(), id);
+  }
+
   getRun(id: string): AgentRun | null {
     const row = this.db.prepare(`SELECT * FROM agent_runs WHERE id = ?`).get(id) as any;
     return row ? mapRun(row) : null;

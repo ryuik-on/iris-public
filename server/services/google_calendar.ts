@@ -383,8 +383,9 @@ export class GoogleCalendarClient {
    * 一件に絞れなければ `null` を返す —— 二件あるときにどちらかを選ぶのは、
    * こちらのすることではない。
    */
-  async findEvent(calendarId: string, date: string, title: string): Promise<{ id: string; start: string | null } | null> {
-    const fold = (t: string) => t.replace(/[\s　]+/g, '');
+  async findEvent(calendarId: string, date: string, title: string, time?: string | null, location?: string | null): Promise<{ id: string; start: string | null; end: string | null; title: string; location: string | null } | null> {
+    // 全角・半角、ローマ数字（Ⅰ と I）、括弧の違いは、同じ題として見る。
+    const fold = (t: string) => t.normalize('NFKC').replace(/[\s　]+/g, '');
     /*
      * 一日の境目は**地方時**で切る。`Z` を付けると九時間ずれる。
      *
@@ -412,8 +413,66 @@ export class GoogleCalendarClient {
       const has = fold(String(e?.summary ?? ''));
       return has && (has.includes(want) || want.includes(has));
     });
-    if (hits.length !== 1) return null;
-    return { id: String(hits[0].id), start: hits[0]?.start?.dateTime ?? hits[0]?.start?.date ?? null };
+    // 同じ日に、題が入れ子になった予定が二つあることがある（「病理学I各論試験」と「病理学I各論試験（再）」）。
+    // 片方が片方の部分文字列なので、どちらを消すか分からなくなる。**題が一致するものを先に**、
+    // それでも決まらなければ、開始時刻（HH:mm）で絞る。どちらでも決まらなければ、選ばない。
+    let chosen = hits;
+    if (chosen.length > 1) {
+      const exact = chosen.filter((e: any) => fold(String(e?.summary ?? '')) === want);
+      if (exact.length === 1) chosen = exact;
+    }
+    if (chosen.length > 1 && time) {
+      const at = chosen.filter((e: any) => String(e?.start?.dateTime ?? '').slice(11, 16) === time);
+      if (at.length === 1) chosen = at;
+    }
+    // それでも決まらなければ場所で絞る。'' は「場所の記入なし」。題の空白だけが違う
+    // 重複（場所の有る無しだけが違う）は、これでしか分けられない。
+    if (chosen.length > 1 && typeof location === 'string') {
+      const place = fold(location);
+      const at = chosen.filter((e: any) => {
+        const has = fold(String(e?.location ?? ''));
+        return place === '' ? has === '' : has.includes(place);
+      });
+      if (at.length === 1) chosen = at;
+    }
+    if (chosen.length !== 1) return null;
+    hits.splice(0, hits.length, ...chosen);
+    return {
+      id: String(hits[0].id),
+      start: hits[0]?.start?.dateTime ?? hits[0]?.start?.date ?? null,
+      end: hits[0]?.end?.dateTime ?? hits[0]?.end?.date ?? null,
+      title: String(hits[0]?.summary ?? ''),
+      location: hits[0]?.location ? String(hits[0].location) : null,
+    };
+  }
+
+  /**
+   * 予定の中身を、id で一件読む。**消す・直す前の控え**のために。
+   * 控えが取れないなら、消さない（元に戻す手がかりが無いまま消すことになる）。
+   */
+  async getEvent(calendarId: string, eventId: string): Promise<{ id: string; title: string; start: string | null; end: string | null; location: string | null; allDay: boolean }> {
+    const e = await this.get(`/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`, {});
+    return {
+      id: String(e?.id ?? eventId), title: String(e?.summary ?? ''),
+      start: e?.start?.dateTime ?? e?.start?.date ?? null, end: e?.end?.dateTime ?? e?.end?.date ?? null,
+      location: e?.location ? String(e.location) : null, allDay: !e?.start?.dateTime,
+    };
+  }
+
+  /** 題名・場所・時刻のうち、渡したものだけを直す。渡さなかったものは Google の値を残す。 */
+  async updateEventFields(input: {
+    calendarId: string; eventId: string; title?: string | null; location?: string | null;
+    start?: string | null; end?: string | null; timeZone: string;
+  }): Promise<{ id: string }> {
+    const when = (value: string) => ({ dateTime: `${value}:00`, timeZone: input.timeZone });
+    const body: any = {};
+    if (input.title) body.summary = input.title;
+    if (input.location !== undefined && input.location !== null) body.location = input.location;
+    if (input.start) body.start = when(input.start);
+    if (input.end) body.end = when(input.end);
+    if (!Object.keys(body).length) throw new Error('直す項目がありません。');
+    const data = await this.patch(`/calendars/${encodeURIComponent(input.calendarId)}/events/${encodeURIComponent(input.eventId)}`, body);
+    return { id: String(data?.id ?? input.eventId) };
   }
 
   /**

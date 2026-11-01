@@ -79,7 +79,7 @@ export class TelemetryService {
     const where = `WHERE ${clauses.join(' AND ')}`;
 
     const rows = this.db
-      .prepare(`SELECT agent, role, status, started_at, ended_at FROM agent_runs ${where}`)
+      .prepare(`SELECT agent, model, role, status, started_at, ended_at FROM agent_runs ${where}`)
       .all(...params) as any[];
 
     /*
@@ -117,6 +117,11 @@ export class TelemetryService {
           ended_at: d.ended_at,
         });
       }
+    }
+
+    // 実際に使ったモデルが分かる実行は、道具の名前ではなくモデルで数える。
+    for (const row of rows) {
+      if (row.model && !String(row.agent).includes(':')) row.agent = `${row.agent}:${row.model}`;
     }
 
     const usage = this.usageByModel(options.sinceIso);

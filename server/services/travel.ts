@@ -6,7 +6,7 @@ import { join } from 'path';
 /**
  * How long it would take to get there, from here, now.
  *
- * The band could already say "明日の予定は 15:30 から「ガウス」" and stop, which
+ * The band could already say "明日の予定は 15:30 から「コスモ」" and stop, which
  * is a diary entry read aloud. The question a person actually has at 14:40 is
  * whether to leave, and that depends on traffic — which is not in the calendar
  * and not on this machine.
@@ -39,7 +39,7 @@ export interface TravelRead {
 const SHORTCUT = process.env.IRIS_TRAVEL_SHORTCUT?.trim() || '移動時間';
 
 /**
- * The calendar says 「ガウス」. Maps needs an address.
+ * The calendar says 「コスモ」. Maps needs an address.
  *
  * A file rather than a constant, and an ignored file rather than a tracked
  * one. These are the places one person goes on a schedule, which is not

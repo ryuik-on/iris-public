@@ -36,11 +36,11 @@ section('いまが何日かを模型に渡す');
    * 間違いで、渡すのは一行で済む。曜日も渡すのは、「来週の火曜」を解くのに
    * 要るのが日付ではなく曜日だから —— 曜日を模型に計算させるとそこが外れる。
    */
-  const p = buildPrompt('来週の火曜3時にガウス', NOW);
+  const p = buildPrompt('来週の火曜3時にコスモ', NOW);
   check('今日の日付が入る', p.includes('2026-09-06'), p.slice(0, 120));
   check('曜日が入る', p.includes('日曜'), p.slice(0, 120));
   check('いまの時刻が入る', p.includes('10:00'));
-  check('入力がそのまま入る', p.includes('来週の火曜3時にガウス'));
+  check('入力がそのまま入る', p.includes('来週の火曜3時にコスモ'));
   check('絶対値で返せと言う', /絶対値/.test(p));
   check('推測するなと言う', /推測せず null/.test(p));
 }
@@ -48,11 +48,11 @@ section('いまが何日かを模型に渡す');
 section('ふつうに読めるもの');
 {
   const d = parseDraft(json({
-    title: 'ガウス', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
+    title: 'コスモ', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
     allDay: false, location: null,
   }), NOW)!;
   check('下書きになる', d !== null);
-  check('題名', d.title === 'ガウス');
+  check('題名', d.title === 'コスモ');
   check('始まり', d.start === '2026-09-08T15:00');
   check('終わり', d.end === '2026-09-08T16:00');
   check('場所が無いことは欠けとして残る', d.missing.includes('場所'), d.missing);
@@ -160,7 +160,7 @@ section('人に見せる一行は、解決済みの絶対値だけ');
    * 正しいかを見る作業。**
    */
   const timed: EventDraft = {
-    title: 'ガウス', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
+    title: 'コスモ', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
     allDay: false, location: null, missing: [], doubts: [],
   };
   check('曜日まで出す', describeDraft(timed) === '2026年9月8日(火) 15:00〜16:00', describeDraft(timed));

@@ -182,7 +182,7 @@ final class Travel: NSObject, CLLocationManagerDelegate {
             "lon": location.coordinate.longitude,
         ]
         request.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        URLSession(configuration: .ephemeral).dataTask(with: request).resume()
+        IrisHTTP.dataTask(with: request).resume()
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {

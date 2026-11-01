@@ -239,6 +239,20 @@ async function main() {
     });
     rig.activity.info('cascade.probe', { conversationId: cascadeConv.id });
 
+    // 承認のあとの続きを、始めた経路（声＝速く安いモデル）で動かすために、経路を持つ。
+    rig.approvals.savePending({
+      approvalId: 'voice-approval', sessionId: 'voice-session', conversationId: null, toolCallId: 'tc2',
+      toolName: 'write_probe', argsJson: '{}', riskLevel: RiskLevel.WRITE, historyJson: '[]', channel: 'voice',
+    });
+    rig.approvals.savePending({
+      approvalId: 'text-approval', sessionId: 'text-session', conversationId: null, toolCallId: 'tc3',
+      toolName: 'write_probe', argsJson: '{}', riskLevel: RiskLevel.WRITE, historyJson: '[]',
+    });
+    eq('a voice run keeps its channel through an approval', rig.approvals.getPendingBySessionId('voice-session')?.channel, 'voice');
+    eq('a run with no channel stated is a text run', rig.approvals.getPendingBySessionId('text-session')?.channel, 'text');
+    rig.approvals.resolve('voice-session', 'rejected');
+    rig.approvals.resolve('text-session', 'rejected');
+
     rig.conversations.deleteConversation(cascadeConv.id);
     eq('deleting a conversation cascades its messages', countMessages(rig, cascadeConv.id), 0);
     eq(

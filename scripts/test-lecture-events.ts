@@ -41,7 +41,7 @@ section('昼を跨ぐ長さ');
    */
   const { events } = toLectureEvents([
     { title: '動物実験の基礎', date: '2026-09-29', period: 7, start: '16:20', span: 1 },
-    { title: '琉大祭準備', date: '2026-09-25', period: 1, start: '08:30', span: 7 },
+    { title: '大学祭準備', date: '2026-09-25', period: 1, start: '08:30', span: 7 },
     { title: '午後2コマ', date: '2026-09-25', period: 4, start: '12:50', span: 2 },
   ]);
   eq('1コマは60分', events[0].end, '2026-09-29T17:20');
@@ -55,7 +55,7 @@ section('幅が読めないときは題名の番号。どちらも無ければ�
 {
   eq('番号から読む', periodsIn('病理学Ⅱ31-32'), 2);
   eq('三つぶん', periodsIn('薬理学43-45'), 3);
-  eq('番号が無ければ null', periodsIn('琉大祭準備'), null);
+  eq('番号が無ければ null', periodsIn('大学祭準備'), null);
   // 一日は7コマ。それを超える読みは番号の読み違い。
   eq('大きすぎる幅は読み違い', periodsIn('資料1-90'), null);
 
@@ -65,7 +65,7 @@ section('幅が読めないときは題名の番号。どちらも無ければ�
   eq('幅が無ければ番号に落ちる', events[0].end, '2026-09-09T10:40');
 
   const unknown = toLectureEvents([
-    { title: '琉大祭準備', date: '2026-09-25', period: 1, start: '08:30' },
+    { title: '大学祭準備', date: '2026-09-25', period: 1, start: '08:30' },
   ]);
   eq('どちらも無ければ終わりは空', unknown.events[0].end, null);
   eq('根拠も空。既定値で埋めない', unknown.events[0].lengthBasis, null);

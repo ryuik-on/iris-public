@@ -134,7 +134,7 @@ final class Day: NSPanel {
         note.stringValue = "読み込み中…"
         band.state = .waiting
         guard let url = URL(string: "http://127.0.0.1:3002/api/schedule?days=1") else { return }
-        session.dataTask(with: url) { [weak self] data, response, error in
+        IrisHTTP.dataTask(with: url) { [weak self] data, response, error in
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             guard let data, status == 200,
                   let reading = try? JSONDecoder().decode(DayReading.self, from: data)

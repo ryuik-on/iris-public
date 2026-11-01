@@ -210,6 +210,22 @@ export const IRIS_TOOLS: ToolDefinition[] = [
     readOnly: true,
   },
   {
+    name: 'model_advice',
+    title: 'どのモデルを使うか',
+    description:
+      '仕事の種類（implement / review / delegate など）を渡すと、実績（成功率）と一件あたりのトークン量×価格から、' +
+      '足りている中で安いモデルを返す。実績が足りなければ「決められない」と返す（安さだけでは選ばない）。' +
+      '重い仕事を始める前、モデルを選ぶ直前に呼ぶ。切り替えはしない。',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        role: { type: 'string', description: 'implement / review / verify / delegate など。省略なら implement' },
+        among: { type: 'array', items: { type: 'string' }, description: '候補を絞るときのモデル名' },
+      },
+    },
+    readOnly: true,
+  },
+  {
     name: 'attempts',
     title: '同じ形で繰り返し失敗している試み',
     description:
@@ -440,6 +456,26 @@ export async function callIrisTool(name: string, rawArgs: unknown, io: IrisIo): 
         const res = await io.request('GET', '/api/usage/cli');
         if (res.status !== 200) return { text: `IRIS が ${res.status} を返しました。`, isError: true };
         return { text: renderAllowance(res.json), isError: false };
+      }
+
+      case 'model_advice': {
+        const args: any = rawArgs ?? {};
+        const q = new URLSearchParams({ role: typeof args.role === 'string' && args.role ? args.role : 'implement' });
+        if (Array.isArray(args.among) && args.among.length) q.set('among', args.among.join(','));
+        const res = await io.request('GET', `/api/models/advice?${q}`);
+        if (res.status !== 200) return { text: `IRIS が ${res.status} を返しました。`, isError: true };
+        const a = res.json ?? {};
+        const rows = (a.candidates ?? []).slice(0, 8).map((c: any) =>
+          `- ${c.model}: 一件 約 $${c.expectedUsd}${c.measured ? `（成功率 ${Math.round(c.measured.successRate * 100)}%・${c.measured.attempts}件・${c.measured.evidence}）` : '（実績なし）'}`);
+        return {
+          text: [
+            `役: ${a.role}／判断の根拠: ${a.basis === 'measured' ? '実績あり' : '実績が足りない'}`,
+            a.recommend ? `おすすめ: ${a.recommend}` : 'おすすめ: 決められない',
+            a.trial ? `試す価値: ${a.trial}（実績なし）` : null,
+            a.reason, '', ...rows, '', a.pricingNote,
+          ].filter((l) => l !== null).join('\n'),
+          isError: false,
+        };
       }
 
       case 'attempts': {

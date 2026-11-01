@@ -1,3 +1,4 @@
+import { stripCdata, parseInstances, type IcsInstance } from '../core/caldav_edit.js';
 import { randomUUID } from 'crypto';
 import { CalendarEvent, CalendarReading, CalendarUnavailableError } from './calendar.js';
 
@@ -500,6 +501,59 @@ export class CaldavCalendarClient {
     });
     this.options.onEvent?.({ type: 'caldav.event_created', detail: { calendar: input.calendarUrl, uid } });
     return { id: uid, url };
+  }
+
+  /**
+   * ある日の予定を、**ファイルの形**（場所・版・中身）で読む。展開しない。
+   *
+   * 直す前に「どのファイルか」「繰り返しの一部ではないか」を確かめるため。展開した読みは
+   * 繰り返しの一回分を別の予定のように見せるが、直す相手は**その回の元になっているファイル**で、
+   * それを黙って直すと、全部の回が変わる。
+   */
+  async findResources(calendarUrl: string, dayStart: Date, dayEnd: Date): Promise<Array<{ href: string; etag: string; ics: string }>> {
+    const calendar = { url: calendarUrl, name: '' } as CalendarCollection;
+    const xml = await this.queryCalendar(calendar, dayStart, dayEnd, false);
+    const out: Array<{ href: string; etag: string; ics: string }> = [];
+    for (const response of elements(xml, 'response')) {
+      const href = elements(response, 'href')[0];
+      const etag = elements(response, 'getetag')[0] ?? '';
+      const data = elements(response, 'calendar-data')[0];
+      if (!href || !data) continue;
+      out.push({ href: this.resolve(href, calendarUrl), etag: decodeEntities(etag).trim(), ics: stripCdata(decodeEntities(data)) });
+    }
+    return out;
+  }
+
+  /**
+   * ある日に始まる予定を、**回ごとに展開した形**で読む（繰り返しの一回も、単発も）。
+   * 展開できない相手のときは、元の形で返す（繰り返しの回は拾えない）。
+   */
+  async findInstances(calendarUrl: string, dayStart: Date, dayEnd: Date, timeZone = 'Asia/Tokyo'): Promise<{ instances: IcsInstance[]; expanded: boolean }> {
+    const calendar = { url: calendarUrl, name: '' } as CalendarCollection;
+    let expanded = true;
+    let xml: string;
+    try { xml = await this.queryCalendar(calendar, dayStart, dayEnd, true); }
+    catch { expanded = false; xml = await this.queryCalendar(calendar, dayStart, dayEnd, false); }
+    const instances = elements(xml, 'calendar-data').flatMap((d) => parseInstances(decodeEntities(d), timeZone));
+    return { instances, expanded };
+  }
+
+  /** 単発の予定のファイルを消す。読んだときの版と同じときだけ。 */
+  async deleteResource(input: { url: string; etag: string }): Promise<void> {
+    await this.request('DELETE', input.url, undefined as any, input.etag ? { 'if-match': input.etag } : {});
+    this.options.onEvent?.({ type: 'caldav.event_deleted', detail: { url: input.url } });
+  }
+
+  /**
+   * 既にある予定のファイルを、直した中身で置き換える。**読んだときの版（etag）と同じときだけ。**
+   * 読んだあとに別の端末で変わっていたら、断る（上書きで他の変更を消さない）。
+   */
+  async replaceResource(input: { url: string; ics: string; etag: string }): Promise<void> {
+    await this.request('PUT', input.url, input.ics, {
+      'content-type': 'text/calendar; charset=utf-8',
+      ...(input.etag ? { 'if-match': input.etag } : {}),
+    });
+    this.options.onEvent?.({ type: 'caldav.event_replaced', detail: { url: input.url } });
   }
 
   /** Resolves an href from a response against the URL it came from. */

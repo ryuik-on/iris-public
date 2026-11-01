@@ -23,7 +23,17 @@ import type { ProactiveSuggestion } from './proactive_service.js';
  *
  * 規則の冷却は再起動で消える（覚えているのは記憶の中だけ）ので、ここで
  * もう一段見る。**同じ規則・同じ根拠・同じ日**なら二度目は開かない。
- * 根拠が変われば（期限の過ぎた課題が増えた、日数が進んだ）別の話として開く。
+ * 根拠が変われば（期限の過ぎた課題が増えた、日数が進んだ）別の話になる。
+ *
+ * ただし**別の話でも、別の会話にはしない。**同じ規則の前の会話に返事が無いまま
+ * 根拠が変わると、日数が一つ進むたびに新しい会話が開き、未読が積もっていった
+ * （「期限まであと◯日」が毎日一本）。返事待ちの会話があるあいだは、新しい根拠を
+ * **その会話に書き足す**（`planOpeners`）。同じ規則の返事待ちは、いつも一本。
+ *
+ * ## 同じ巡回で出たものは一本にまとめる
+ *
+ * 一度の見回りで規則が三つ発火すると、会話が三本開いていた。同時に気づいた
+ * ことは、一度に言う（`bundleOpener`）。
  */
 
 export interface Opener {
@@ -91,6 +101,93 @@ export function openerFor(suggestion: ProactiveSuggestion, at: Date = new Date()
 }
 
 /**
+ * 同じ巡回で発火した提案を、一本の会話の最初の一言にする。
+ *
+ * 一件なら `openerFor` と同じもの。二件以上なら、件数を頭に、項目ごとに提案の文と
+ * 根拠の行を並べ、問いは最後に一つだけ置く（項目ごとに問うと、どれに答えればよいか
+ * 分からない）。鍵は項目ごとに `openerFor` の鍵を使う —— 控えも項目ごとに残すので、
+ * 「同じ規則・同じ根拠・同じ日」の見分けはまとめても変わらない。
+ */
+export function bundleOpener(suggestions: ProactiveSuggestion[], at: Date = new Date()): Opener {
+  if (suggestions.length === 0) throw new Error('まとめる提案がありません。');
+  if (suggestions.length === 1) return openerFor(suggestions[0], at);
+
+  const items = suggestions.map((s, i) => {
+    const lines = s.because.flatMap((b) => linesOf(b.value));
+    const head = `${i + 1}. ${s.suggestion.trim()}`;
+    return lines.length > 0 ? `${head}\n${lines.map((l) => `   - ${l}`).join('\n')}` : head;
+  });
+  const title = `気になることが ${suggestions.length} 件あります`;
+  return {
+    key: suggestions.map((s) => openerFor(s, at).key).join('+'),
+    title,
+    text: [`${title}。`, items.join('\n'), BUNDLE_ASK].join('\n\n'),
+  };
+}
+const BUNDLE_ASK = 'どれから話しますか。もう片付いているものがあれば、そう言ってください。';
+
+/** 控えのうち、`planOpeners` が見るところ。 */
+export interface OpenerLedger {
+  has(key: string): boolean;
+  /** この規則の、返事を待っている（まだ残っている）会話の控え。無ければ undefined。 */
+  waitingFor(ruleId: string): { key: string; conversationId: string; createdAt: string } | undefined;
+}
+
+export interface OpenerPlan {
+  /** 同じ規則・同じ根拠・同じ日の控えがある。何もしない。 */
+  repeated: ProactiveSuggestion[];
+  /** 返事待ちの会話が新しい（`holdMs` 以内）。まだ重ねない。 */
+  held: Array<{ suggestion: ProactiveSuggestion; waitingOn: string }>;
+  /** 返事待ちの会話に、新しい根拠を書き足す。控えはその一本を付け替える。 */
+  refreshed: Array<{ suggestion: ProactiveSuggestion; opener: Opener; conversationId: string; previousKey: string }>;
+  /** 新しく開くもの。まとめて一本（`bundle`）にする。 */
+  fresh: Array<{ suggestion: ProactiveSuggestion; opener: Opener }>;
+  bundle: Opener | null;
+}
+
+/** 返事待ちの会話に、次を書き足すまで待つ時間。それより前の書き足しは重ねない。 */
+export const HOLD_MS = 24 * 3_600_000;
+
+/**
+ * 一度の巡回で発火した提案を、どう話すかに振り分ける。模型は呼ばない。
+ *
+ * 順に見るのは三つ。**同じ鍵の控えがある**なら何もしない（前からの「二度言わない」）。
+ * **同じ規則の返事待ちがある**なら、新しい会話は開かない —— 開いて `holdMs` 以内なら
+ * 待ち、過ぎていれば新しい根拠をその会話に書き足す。前は 24 時間を過ぎると二本目を
+ * 開いていたので、返事をしないあいだ毎日一本ずつ増えた。**どちらでもなければ**新しく
+ * 開き、同じ巡回の新しいものは一本にまとめる。
+ */
+export function planOpeners(
+  suggestions: ProactiveSuggestion[],
+  ledger: OpenerLedger,
+  at: Date = new Date(),
+  holdMs: number = HOLD_MS
+): OpenerPlan {
+  const plan: OpenerPlan = { repeated: [], held: [], refreshed: [], fresh: [], bundle: null };
+  const seen = new Set<string>();
+  for (const suggestion of suggestions) {
+    // 同じ巡回で同じ規則が二度出ることは無いはずだが、出ても一本に数える。
+    if (seen.has(suggestion.ruleId)) continue;
+    seen.add(suggestion.ruleId);
+
+    const opener = openerFor(suggestion, at);
+    if (ledger.has(opener.key)) { plan.repeated.push(suggestion); continue; }
+    const waiting = ledger.waitingFor(suggestion.ruleId);
+    if (waiting) {
+      if (at.getTime() - Date.parse(waiting.createdAt) < holdMs) {
+        plan.held.push({ suggestion, waitingOn: waiting.conversationId });
+      } else {
+        plan.refreshed.push({ suggestion, opener, conversationId: waiting.conversationId, previousKey: waiting.key });
+      }
+      continue;
+    }
+    plan.fresh.push({ suggestion, opener });
+  }
+  if (plan.fresh.length > 0) plan.bundle = bundleOpener(plan.fresh.map((f) => f.suggestion), at);
+  return plan;
+}
+
+/**
  * レールに出す二文字。
  *
  * レールの幅は 52 ポイントで、題は入らない。**入らないものを縮めて入れると、
@@ -103,6 +200,10 @@ const LABELS: Record<string, string> = {
   'watch.lectures-new-version': '講義',
   'watch.grant-dead': '認可',
   'watch.delegation-finished': '委任',
+  'agent.started': '開発',
+  'agent.gave-up': '開発',
+  'morning.brief': '今朝',
+  'self.fix': '改善',
 };
 export function railLabel(ruleId: string): string {
   return LABELS[ruleId] ?? '話';

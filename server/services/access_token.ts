@@ -34,7 +34,14 @@ function mint(): string {
 
 export function loadAccessToken(path: string, env = process.env): TokenState {
   const configured = env.IRIS_ACCESS_TOKEN?.trim();
-  if (configured) return { token: configured, source: 'env', path: null };
+  if (configured) {
+    try {
+      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      writeFileSync(path, configured + '\n', { mode: 0o600 });
+      harden(path);
+      return { token: configured, source: 'env', path };
+    } catch { return { token: configured, source: 'env', path: null }; }
+  }
 
   try {
     if (existsSync(path)) {

@@ -304,7 +304,7 @@ async function main() {
       check('the matched phrase is reported', /応募自体不可/.test(foreclose.matched ?? ''));
 
       eq('a clash is picked up from ※', readContestMarkings('※12:50 病理I講義中に締切').conflict, '12:50 病理I講義中に締切');
-      eq('and from ⚠️', readContestMarkings('⚠️琉大祭と衝突確定').conflict, '琉大祭と衝突確定');
+      eq('and from ⚠️', readContestMarkings('⚠️大学祭と衝突確定').conflict, '大学祭と衝突確定');
       eq('with none reported when there is none', readContestMarkings('賞金100万').conflict, undefined);
     }
 

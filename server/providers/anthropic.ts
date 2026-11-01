@@ -74,6 +74,51 @@ export class AnthropicProvider implements AIProvider {
 
   setModel(modelName: string) { this.currentModel = modelName; }
 
+  /**
+   * 画像を見て答える、道具を持たない一回きりの問い合わせ。
+   *
+   * 画面の一部を「見て」と頼まれたときに使う。道具・会話の履歴・思考は付けない：
+   * 画像の中の文面は外から来たものなので、道具を呼べる会話には入れない。
+   */
+  async describeImage(
+    input: { system: string; question: string; imageBase64: string; mime: 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif'; history?: Array<{ q: string; a: string }> },
+    signal?: AbortSignal
+  ): Promise<{ content: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number } }> {
+    const earlier = (input.history ?? []).flatMap((h) => [
+      { role: 'user' as const, content: h.q },
+      { role: 'assistant' as const, content: h.a },
+    ]);
+    const message = await this.client.messages.create(
+      {
+        model: this.currentModel,
+        system: input.system,
+        max_tokens: 1500,
+        messages: [
+          ...earlier,
+          {
+            role: 'user',
+            content: [
+              { type: 'image', source: { type: 'base64', media_type: input.mime, data: input.imageBase64 } },
+              { type: 'text', text: input.question },
+            ],
+          },
+        ],
+      },
+      { signal }
+    );
+    const text = message.content.map((b: any) => (b.type === 'text' ? b.text : '')).join('').trim();
+    const u: any = message.usage ?? {};
+    return {
+      content: text,
+      usage: {
+        inputTokens: u.input_tokens ?? 0,
+        outputTokens: u.output_tokens ?? 0,
+        cacheReadTokens: u.cache_read_input_tokens ?? 0,
+        cacheCreationTokens: u.cache_creation_input_tokens ?? 0,
+      },
+    };
+  }
+
   describeSettings() {
     return { effort: this.effort, maxTokens: this.maxTokens, promptCache: this.cacheEnabled ? 'on' : 'off' };
   }

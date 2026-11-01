@@ -58,6 +58,8 @@ export interface Tool {
    * WRITE / EXTERNAL_ACTION / DESTRUCTIVE regardless of this flag.
    */
   skipApproval?: boolean;
+  /** この道具が待てる時間。無ければ IRIS_TOOL_TIMEOUT_MS（既定 30 秒）。遅いと分かっている外部サイト用。 */
+  timeoutMs?: number;
   schema: ToolSchema;
   /**
    * One or two sentences saying what this call will actually do.

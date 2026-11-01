@@ -1,3 +1,4 @@
+import { localApiFetch } from '../server/core/owner_access.js';
 #!/usr/bin/env -S npx tsx
 /**
  * Claude Code の PreToolUse から呼ばれて、記録された失敗を繰り返す前に止める。
@@ -153,7 +154,7 @@ async function main() {
 
   let recurring: RecordedFailure[];
   try {
-    const res = await fetch(`${BASE}/api/experiences?recurring=true`, {
+    const res = await localApiFetch(`${BASE}/api/experiences?recurring=true`, {
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
     const body: any = await res.json();
@@ -200,7 +201,7 @@ async function main() {
     ? '\n\n実機で確かめる形（どれか一つで印が付きます）:\n' +
       '  menubar/install.sh        —— 盤を作って署名して開く\n' +
       '  launchctl kickstart -k gui/501/com.user.iris —— 常駐サーバを入れ替える\n' +
-      '  curl http://127.0.0.1:3002/api/…  —— 生きているサーバを叩く\n' +
+      '  npm run --silent iris:request -- GET /api/…  —— 生きているサーバを叩く\n' +
       '  npm run day               —— 実際の予定で盤を出す'
     : '';
   out({

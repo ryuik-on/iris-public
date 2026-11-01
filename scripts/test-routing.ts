@@ -204,13 +204,12 @@ async function main() {
     eq('the paid providers are never called', anthropic.calls + openai.calls, 0);
     check('and the provider is not written off for it', router.health()[0].available);
 
-    // A timeout is not a failure (§47) and the retry layer above owns it.
-    // Failing over here would double a call that may already be billed.
+    // A disconnected generation is cancelled and passed to the next route.
     gemini.nextError = Object.assign(new Error('socket hang up'), { code: 'ECONNRESET' });
     threw = false;
     try { await call(router); } catch { threw = true; }
-    check('a network fault is left to the retry layer', threw);
-    eq('and still does not spend money elsewhere', anthropic.calls + openai.calls, 0);
+    check('a network fault hands the request to another provider', !threw);
+    eq('the next provider receives it once', anthropic.calls + openai.calls, 1);
   }
 
   // -----------------------------------------------------------------------
@@ -306,6 +305,90 @@ async function main() {
     check('the abort surfaces', threw);
     eq('a caller who stopped caring is not billed for a second provider', anthropic.calls, 0);
     check('and the provider is not penalised for a cancelled call', router.health()[0].available);
+  }
+
+  // -----------------------------------------------------------------------
+  section('Streaming stays immediate, and replacement clears only stale text');
+
+  {
+    let finish: (() => void) | undefined;
+    const streaming: AIProvider = {
+      id: 'streaming', name: 'Streaming', vendor: 'test', currentModel: 'streaming-v1', setModel() {},
+      async generateResponse(_messages, _tools, _system, _signal, onDelta) {
+        onDelta?.('届いた断片');
+        return new Promise<AIProviderResponse>((resolve) => { finish = () => resolve({ content: '届いた断片の完了' }); });
+      },
+    };
+    const router = new ProviderRouter([{ key: 'streaming', provider: streaming }]);
+    const deltas: string[] = [];
+    let completed = false;
+    const pending = router.generateResponse([], [], 'sys', undefined, (text) => deltas.push(text)).then(() => { completed = true; });
+    await Promise.resolve();
+    eq('a successful candidate forwards its first delta before completion', deltas, ['届いた断片']);
+    check('the response has not completed when that delta is visible', !completed);
+    finish?.();
+    await pending;
+  }
+
+  {
+    let receivedHistory: any;
+    let receivedTools: any;
+    const slow: AIProvider = {
+      id: 'slow', name: 'Slow', vendor: 'test', currentModel: 'slow-v1', setModel() {},
+      async generateResponse(_messages, _tools, _system, signal, onDelta) {
+        onDelta?.('古い断片');
+        return new Promise<AIProviderResponse>((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+      },
+    };
+    const successor: AIProvider = {
+      id: 'successor', name: 'Successor', vendor: 'test', currentModel: 'successor-v1', setModel() {},
+      async generateResponse(messages, tools, _system, _signal, onDelta) {
+        receivedHistory = messages;
+        receivedTools = tools;
+        onDelta?.('新しい断片');
+        return { content: '新しい断片の完了' };
+      },
+    };
+    const router = new ProviderRouter(
+      [{ key: 'slow', provider: slow }, { key: 'successor', provider: successor }],
+      { attemptTimeoutMs: 25 }
+    );
+    const history: any[] = [{ role: 'user', content: '依頼' }, { role: 'tool', toolName: 'read_only', toolCallId: 't1', toolResult: { cached: true } }];
+    const tools: any[] = [{ name: 'read_only' }];
+    let visible = '';
+    let resets = 0;
+    const response = await router.generateResponse(history, tools, 'sys', undefined,
+      (text) => { visible += text; },
+      () => { resets++; visible = ''; }
+    );
+    eq('a timed-out candidate is replaced by the next provider', response.servedBy, 'successor');
+    eq('the stale partial reply is reset before the successor streams', visible, '新しい断片');
+    eq('the stream resets exactly for the handoff', resets, 1);
+    check('the replacement retains conversation history', receivedHistory === history);
+    check('the replacement retains available tools', receivedTools === tools);
+  }
+
+  {
+    let successorCalls = 0;
+    const waiting: AIProvider = {
+      id: 'waiting', name: 'Waiting', vendor: 'test', currentModel: 'waiting-v1', setModel() {},
+      async generateResponse(_messages, _tools, _system, signal) {
+        return new Promise<AIProviderResponse>((_, reject) => signal?.addEventListener('abort', () => reject(new Error('cancelled')), { once: true }));
+      },
+    };
+    const successor: AIProvider = {
+      id: 'successor', name: 'Successor', vendor: 'test', currentModel: 'successor-v1', setModel() {},
+      async generateResponse() { successorCalls++; return { content: 'must not run' }; },
+    };
+    const router = new ProviderRouter(
+      [{ key: 'waiting', provider: waiting }, { key: 'successor', provider: successor }],
+      { attemptTimeoutMs: 200 }
+    );
+    const controller = new AbortController();
+    const pending = router.generateResponse([], [], 'sys', controller.signal).catch(() => undefined);
+    setTimeout(() => controller.abort(), 10);
+    await pending;
+    eq('a run deadline or user cancellation starts no replacement call', successorCalls, 0);
   }
 
   // -----------------------------------------------------------------------
@@ -452,6 +535,39 @@ async function main() {
     // completely different actions, so they must not read the same.
     check('with nothing free left, the reason given is the budget', /支出上限/.test(message), message);
     eq('and nothing paid was called', anthropic.calls + openai.calls, 0);
+  }
+
+  section('A provider that hit its own daily cap is skipped, not forced');
+
+  {
+    const openai = new FakeProvider('openai', 'openai', 'gpt-6.1-sol');
+    const gemini = new FakeProvider('gemini', 'gemini', 'gemini-3.6-flash');
+    const events: RouterEvent[] = [];
+    let openaiOk = true;
+    const router = new ProviderRouter(
+      [{ key: 'openai', provider: openai }, { key: 'gemini', provider: gemini }],
+      { onEvent: (e) => events.push(e), providerAllowed: (k) => (k === 'openai' ? openaiOk : true), freeKeys: ['gemini'] }
+    );
+    await call(router);
+    eq('under its cap, the preferred provider serves', openai.calls, 1);
+    openaiOk = false;
+    const res = await call(router);
+    eq('over its cap, the turn goes to the next provider', res.servedBy, 'gemini');
+    eq('and the capped provider is not called', openai.calls, 1);
+    check('the cap is reported', events.some((e) => (e as any).type === 'router.provider_capped'));
+    gemini.nextError = httpError(429, 'Too Many Requests');
+    let message = '';
+    try { await call(router); } catch (err: any) { message = String(err?.message ?? err); }
+    check('when the only other provider fails, a capped one is not forced — the turn fails and says why', openai.calls === 1 && message.length > 0, message);
+  }
+
+  {
+    const openai = new FakeProvider('openai', 'openai', 'gpt-6.1-sol');
+    const router = new ProviderRouter([{ key: 'openai', provider: openai }], { providerAllowed: () => false });
+    let message = '';
+    try { await call(router); } catch (err: any) { message = String(err?.message ?? err); }
+    check('with everything capped, the refusal names the cap and the setting', message.includes('上限') && message.includes('IRIS_OPENAI_DAILY_USD'), message);
+    eq('and nothing was called', openai.calls, 0);
   }
 
   console.log(`\n${'─'.repeat(60)}`);

@@ -67,6 +67,12 @@ export interface AIProvider {
   name: string;
   currentModel: string;
   setModel(modelName: string): void;
+  /**
+   * True when this provider applies the per-model timeout inside its own
+   * candidate loop. The orchestrator must leave that loop intact so it can
+   * hand a timed-out request to the next model.
+   */
+  ownsProviderTimeout?: boolean;
   generateResponse(
     messages: ConversationTurn[],
     tools: Tool[],
@@ -87,6 +93,8 @@ export interface AIProvider {
      * return value — `content` is still the complete text, and anything that
      * needs the finished answer should use that.
      */
-    onDelta?: (text: string) => void
+    onDelta?: (text: string) => void,
+    /** Called immediately before a router starts a replacement candidate. */
+    onFailover?: () => void
   ): Promise<AIProviderResponse>;
 }

@@ -19,6 +19,7 @@ export interface StoredConversationMessage {
   role: 'user' | 'assistant';
   content: string;
   createdAt: string;
+  contextOrigin?: 'external_image';
 }
 
 export const DEFAULT_CONVERSATION_TITLE = '新しい会話';
@@ -122,6 +123,19 @@ export class SqliteConversationStore {
     }));
   }
 
+  /** 古い部分の要約。覆っている件数（先頭から何件ぶんか）と一緒に。 */
+  getSummary(conversationId: string): { coveredCount: number; summary: string } | null {
+    const row = this.db.prepare(`SELECT covered_count, summary FROM conversation_summaries WHERE conversation_id = ?`).get(conversationId) as any;
+    return row ? { coveredCount: row.covered_count, summary: row.summary } : null;
+  }
+
+  saveSummary(conversationId: string, coveredCount: number, summary: string): void {
+    this.db.prepare(
+      `INSERT INTO conversation_summaries (conversation_id, covered_count, summary, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(conversation_id) DO UPDATE SET covered_count = excluded.covered_count, summary = excluded.summary, updated_at = excluded.updated_at`
+    ).run(conversationId, coveredCount, summary, new Date().toISOString());
+  }
+
   setTitle(conversationId: string, title: string): void {
     this.db.prepare(`UPDATE conversations SET title = ? WHERE id = ?`).run(title, conversationId);
   }
@@ -143,7 +157,8 @@ export class SqliteConversationStore {
   addMessage(
     conversationId: string,
     role: 'user' | 'assistant',
-    content: string
+    content: string,
+    contextOrigin?: 'external_image'
   ): StoredConversationMessage {
     const now = new Date().toISOString();
     const id = randomUUID();
@@ -154,10 +169,10 @@ export class SqliteConversationStore {
       this.db
         .prepare(
           `INSERT INTO conversation_messages
-             (id, conversation_id, role, content, created_at)
-           VALUES (?, ?, ?, ?, ?)`
+             (id, conversation_id, role, content, created_at, context_origin)
+           VALUES (?, ?, ?, ?, ?, ?)`
         )
-        .run(id, conversationId, role, content, now);
+        .run(id, conversationId, role, content, now, contextOrigin ?? 'chat');
 
       this.db
         .prepare(`UPDATE conversations SET updated_at = ?, updated_seq = ${NEXT_SEQ} WHERE id = ?`)
@@ -173,13 +188,13 @@ export class SqliteConversationStore {
       throw err;
     }
 
-    return { id, conversationId, role, content, createdAt: now };
+    return { id, conversationId, role, content, createdAt: now, ...(contextOrigin ? { contextOrigin } : {}) };
   }
 
   listMessages(conversationId: string): StoredConversationMessage[] {
     const rows = this.db
       .prepare(
-        `SELECT id, conversation_id, role, content, created_at
+        `SELECT id, conversation_id, role, content, created_at, context_origin
            FROM conversation_messages
           WHERE conversation_id = ?
           ORDER BY created_at ASC, rowid ASC`
@@ -192,6 +207,7 @@ export class SqliteConversationStore {
       role: row.role,
       content: row.content,
       createdAt: row.created_at,
+      ...(row.context_origin === 'external_image' ? { contextOrigin: 'external_image' as const } : {}),
     }));
   }
 

@@ -197,6 +197,11 @@ export class DevelopmentService {
    * accepted separately, so a run cannot be recorded as succeeded while its
    * result says it failed.
    */
+  /** 実際に使ったモデル。モデルごとの実績（`telemetry_service`）が読む。 */
+  setRunModel(runId: string, model: string): void {
+    this.store.setRunModel(runId, model);
+  }
+
   recordResult(input: { runId: string; outcome: any; summary: string; detail?: any }): RunView {
     const existing = this.store.getRun(input.runId);
     if (!existing) throw new AgentRunNotFoundError(input.runId);

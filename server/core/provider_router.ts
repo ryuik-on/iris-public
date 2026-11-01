@@ -1,6 +1,7 @@
 import { AIProvider, AIProviderResponse, SystemInput } from '../providers/base.js';
 import { Tool, ConversationTurn } from '../core/types.js';
 import { classifyProviderError, ClassifiedProviderError, ProviderErrorKind } from './provider_errors.js';
+import { withTimeout } from './resilience.js';
 
 /**
  * Routes each model call to the first provider that is currently usable.
@@ -34,10 +35,10 @@ const DAY_MS = 86_400_000;
  * the *provider* — its quota, its credit, its keys, its capacity — say
  * anything about whether a different provider would succeed.
  *
- * Timeouts and network faults are deliberately absent. §47: a timeout is not a
- * failure, and the retry layer above already owns it. Failing over on a
- * timeout would turn one slow call into two calls that both may have been
- * charged.
+ * Generation has no external side effect. A candidate that times out or loses
+ * its connection is cancelled, then the unchanged request may continue at a
+ * different configured provider. A caller cancellation remains terminal: it
+ * must never fan out into a new billable call.
  */
 const FAILOVER_KINDS = new Set<ProviderErrorKind>([
   'quota_exhausted',
@@ -48,7 +49,12 @@ const FAILOVER_KINDS = new Set<ProviderErrorKind>([
   'invalid_key_characters',
   'missing_key',
   'model_not_found',
+  'timeout',
+  'network',
 ]);
+
+/** 次の候補が残っているときに、黙ったまま何秒で諦めるか。`IRIS_FAILOVER_STALL_MS` で変えられる。 */
+const FAILOVER_STALL_MS = Number(process.env.IRIS_FAILOVER_STALL_MS) > 0 ? Number(process.env.IRIS_FAILOVER_STALL_MS) : 60_000;
 
 /** Long enough to mean "not without a human"; short enough to not be forever. */
 const CONFIG_FAULT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -141,11 +147,20 @@ export interface ProviderRouterOptions {
    * should cost capability, not the ability to talk.
    */
   paidAllowed?: () => boolean;
+  /**
+   * この出し先を、いま使ってよいか（出し先ごとの一日の上限）。
+   * false の出し先は、順番から外す。全体の上限と違い、**どれか一つの使いすぎ**を防ぐ。
+   */
+  providerAllowed?: (key: string) => boolean;
   /** Registry keys that cost nothing. Everything else is treated as paid. */
   freeKeys?: string[];
+  /** Per-candidate generation limit. Omit only for callers that own it. */
+  attemptTimeoutMs?: number;
 }
 
 export class ProviderRouter implements AIProvider {
+  /** The timeout belongs inside the candidate loop, rather than around it. */
+  readonly ownsProviderTimeout: boolean;
   private entries: Entry[];
   private options: Required<Pick<ProviderRouterOptions, 'quotaResetTimeZone'>> & ProviderRouterOptions;
   /** The provider that answered most recently, for cost attribution and review independence. */
@@ -169,6 +184,21 @@ export class ProviderRouter implements AIProvider {
     }));
     this.lastServed = this.entries[0];
     this.options = { quotaResetTimeZone: 'America/Los_Angeles', ...options };
+    this.ownsProviderTimeout = Boolean(options.attemptTimeoutMs);
+  }
+
+  /** いまの各出し先の状態（画面に出すため）。使えるか、止まっているなら理由と再開の見込み。 */
+  snapshot(): Array<{ key: string; model: string; available: boolean; reason: string | null; message: string | null; retryAt: string | null; servedCount: number }> {
+    const now = this.now();
+    return this.entries.map((e) => ({
+      key: e.key,
+      model: (e.provider as any).currentModel ?? e.key,
+      available: e.unavailableUntilMs <= now,
+      reason: e.unavailableUntilMs > now ? e.reason : null,
+      message: e.unavailableUntilMs > now ? e.message : null,
+      retryAt: e.unavailableUntilMs > now ? new Date(e.unavailableUntilMs).toISOString() : null,
+      servedCount: e.servedCount,
+    }));
   }
 
   private now(): number {
@@ -257,7 +287,8 @@ export class ProviderRouter implements AIProvider {
      * arguments and called with four. The failure was invisible in each file
      * and only showed up as a reply that arrived all at once.
      */
-    onDelta?: (text: string) => void
+    onDelta?: (text: string) => void,
+    onFailover?: () => void
   ): Promise<AIProviderResponse> {
     let candidates = this.available();
     let forced = false;
@@ -277,6 +308,22 @@ export class ProviderRouter implements AIProvider {
       candidates = free;
     }
 
+    // 出し先ごとの一日の上限に達したものを外す。外した結果、残りが無いときは、強制せずに断る。
+    let cappedOut: string[] = [];
+    if (this.options.providerAllowed) {
+      cappedOut = candidates.filter((e) => !this.options.providerAllowed!(e.key)).map((e) => e.key);
+      if (cappedOut.length) {
+        this.options.onEvent?.({ type: 'router.provider_capped', excluded: cappedOut } as any);
+        candidates = candidates.filter((e) => !cappedOut.includes(e.key));
+      }
+    }
+    if (candidates.length === 0 && cappedOut.length > 0) {
+      throw new Error(
+        `${cappedOut.join('・')} は、きょうの使用額の上限に達しています。ほかの出し先は、いま使えません。` +
+          '少し待つか（無料枠の混雑は数分で戻ります）、上限を上げてください（.env の IRIS_OPENAI_DAILY_USD）。'
+      );
+    }
+
     if (candidates.length === 0 && this.options.paidAllowed && !this.options.paidAllowed()) {
       // Distinguished from an outage on purpose: "we hit the spending limit"
       // and "the providers are down" call for completely different actions.
@@ -290,7 +337,7 @@ export class ProviderRouter implements AIProvider {
       // Every cooldown is an estimate about a future we cannot see. Refusing
       // the turn because all the estimates are pessimistic would let a wrong
       // guess silence the assistant, so try the one that should recover first.
-      const soonest = [...this.entries].sort((a, b) => a.unavailableUntilMs - b.unavailableUntilMs)[0];
+      const soonest = [...this.entries].filter((e) => !this.options.providerAllowed || this.options.providerAllowed(e.key)).sort((a, b) => a.unavailableUntilMs - b.unavailableUntilMs)[0] ?? this.entries[0];
       this.options.onEvent?.({
         type: 'router.all_unavailable',
         tried: this.entries.map((e) => e.key),
@@ -306,7 +353,31 @@ export class ProviderRouter implements AIProvider {
     for (let attempt = 0; attempt < candidates.length; attempt++) {
       const entry = candidates[attempt];
       try {
-        const response = await entry.provider.generateResponse(messages, tools, systemInstruction, signal, onDelta);
+        /*
+         * 次の候補が残っているあいだは、**黙ったまま止まった候補を、早く諦める**。
+         *
+         * 無料の Gemini が 120 秒黙ったまま（タイムアウト）で、次へ回るまでに 2 分かかった
+         * （2026-10-27、Claude も OpenAI も残高が切れて、Gemini しか残っていなかった日）。
+         * 時間切れは「最後の進みから」数える：返事の断片が届いているあいだは切らない。
+         * 最後の候補は、これまでどおりの長さまで待つ。
+         */
+        const isLast = attempt === candidates.length - 1;
+        const stallMs = this.options.attemptTimeoutMs
+          ? (isLast ? this.options.attemptTimeoutMs : Math.min(this.options.attemptTimeoutMs, FAILOVER_STALL_MS))
+          : 0;
+        const progress = { lastAt: Date.now() };
+        const watchedDelta = onDelta ? (text: string) => { progress.lastAt = Date.now(); onDelta(text); } : undefined;
+        const request = (attemptSignal: AbortSignal) =>
+          entry.provider.generateResponse(messages, tools, systemInstruction, attemptSignal, watchedDelta);
+        const response = this.options.attemptTimeoutMs
+          ? await withTimeout(request, {
+              ms: stallMs,
+              label: `${entry.key} のモデル呼び出し`,
+              sideEffectUnknown: false,
+              signal,
+              progress,
+            })
+          : await request(signal ?? new AbortController().signal);
         const now = this.now();
         entry.consecutiveFailures = 0;
         entry.lastServedAtMs = now;
@@ -340,6 +411,10 @@ export class ProviderRouter implements AIProvider {
 
         const next = candidates[attempt + 1];
         if (next) {
+          // Deltas are normally forwarded immediately. Only a replacement
+          // candidate invalidates already-visible text, so reset at this exact
+          // boundary instead of buffering successful replies.
+          onFailover?.();
           this.options.onEvent?.({
             type: 'router.failover',
             from: entry.key,

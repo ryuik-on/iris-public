@@ -102,8 +102,62 @@ export function describeApproval(toolName: string, args: any): ApprovalText {
     case 'write_file':
       return {
         heading: 'ファイルを書き換えますか？',
-        summary: `${quote(a.path)} に書き込みます。すでにある場合は中身が置き換わります。`,
-        facts: facts([['書く内容', quote(a.content, 200)]]),
+        summary: `${quote(a.path)} に書き込みます。`,
+        facts: facts([['書き方', ({ append: '末尾に追加', overwrite: '内容を置き換える', create_only: '新規作成だけ' } as Record<string, string>)[a.mode] ?? '保存先に応じた既定の方法'], ['書く内容', quote(a.content, 200)]]),
+      };
+    case 'create_calendar_event':
+      return {
+        heading: '予定を作りますか？',
+        summary: `「${quote(a.title)}」を${a.source === 'icloud' ? ' iCloud' : ' Google'} のカレンダーに作ります。`,
+        facts: facts([
+          ['開始', a.start], ['終了', a.end], ['終日', a.allDay === true ? 'はい' : ''], ['場所', a.location],
+          ['入れる先', a.calendarId],
+        ]),
+      };
+    case 'reschedule_calendar_event':
+      return {
+        heading: '予定の時刻を変えますか？',
+        summary: `${a.date} の「${quote(a.title)}」を ${a.newStart}${a.newEnd ? ` 〜 ${a.newEnd}` : ''} に動かします。`,
+        facts: facts([['カレンダー', a.calendarId]]),
+      };
+    case 'update_fdp_task':
+      return {
+        heading: '課題の台帳を直しますか？',
+        summary: `${a.id} の「${{ dueDate: '期限', status: '状態', nextAction: '次の行動', progress: '進捗率', startDate: '開始予定日' }[a.field as string] ?? a.field}」を ${quote(a.value)} に変えます。IRIS の台帳が正本で、スプレッドシートにも反映されます。`,
+        facts: [],
+      };
+    case 'update_calendar_event': {
+      const changes = [
+        a.newTitle ? `題名を「${a.newTitle}」` : null,
+        a.newLocation !== undefined && a.newLocation !== null ? `場所を「${a.newLocation}」` : null,
+        a.newStart ? `開始を ${a.newStart}` : null,
+        a.newEnd ? `終了を ${a.newEnd}` : null,
+      ].filter(Boolean).join('、');
+      return {
+        heading: '予定を直しますか？',
+        summary: `${a.date} の「${a.title}」の ${changes} に変えます。直す前の中身は控えに残ります。${a.reason ? `（理由: ${a.reason}）` : ''}`,
+        facts: [],
+      };
+    }
+    case 'delete_calendar_events': {
+      const list = (Array.isArray(a.items) ? a.items : []).map((it: any) => `${it.date}${it.time ? ` ${it.time}` : ''} 「${it.title}」${typeof it.location === 'string' ? (it.location === '' ? '（場所の記入なし）' : `（場所: ${it.location}）`) : ''}`).join(' ／ ');
+      return {
+        heading: '予定を消しますか？',
+        summary: `カレンダーから、次の ${(a.items ?? []).length} 件を消します（毎週の予定は、その回だけ）: ${list}。消す前の中身は控えに残ります。${a.reason ? `（理由: ${a.reason}）` : ''}`,
+        facts: [],
+      };
+    }
+    case 'hold_fdp_task':
+      return {
+        heading: '課題を保留にしますか？',
+        summary: `${a.id} を ${a.until} まで保留にします。その日までは遅れとして数えず、過ぎたら自動で戻ります。${a.reason ? `（理由: ${a.reason}）` : ''}`,
+        facts: [],
+      };
+    case 'open_target':
+      return {
+        heading: '開きますか？',
+        summary: `Mac で ${quote(a.target)} を開きます。`,
+        facts: [],
       };
     case 'delete_file':
       return {
@@ -138,7 +192,7 @@ export function describeApproval(toolName: string, args: any): ApprovalText {
     default:
       return {
         heading: 'この操作を実行しますか？',
-        summary: `IRIS が「${toolName}」を実行しようとしています。何をするかは下の技術情報にあります。`,
+        summary: `IRIS が「${toolName}」を実行しようとしています。対象と内容を、操作の詳細で確認してください。`,
         facts: [],
       };
   }

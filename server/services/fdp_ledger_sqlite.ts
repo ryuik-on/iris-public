@@ -54,7 +54,7 @@ const COLUMNS: Array<{ sheet: string; column: string; numeric?: boolean }> = [
   { sheet: '最終更新日', column: 'last_updated' },
   { sheet: '完了条件／成果物', column: 'done_criteria' },
   { sheet: '次の行動', column: 'next_action' },
-  { sheet: '大阪大学実習への接続', column: 'osaka_link' },
+  { sheet: '外部実習への接続', column: 'osaka_link' },
   { sheet: '管理区分', column: 'bucket' },
 ];
 
@@ -116,7 +116,7 @@ export function asSheetRow(t: LedgerTask): Record<string, string> {
     最終更新日: t.lastUpdated ?? '',
     '完了条件／成果物': t.doneCriteria ?? '',
     次の行動: t.nextAction ?? '',
-    大阪大学実習への接続: t.osakaLink ?? '',
+    外部実習への接続: t.osakaLink ?? '',
     管理区分: t.bucket ?? '',
   };
 }

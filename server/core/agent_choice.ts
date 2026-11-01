@@ -54,6 +54,7 @@ export interface Choice {
 }
 
 export function chooseAgent(input: {
+  permittedAgents?: AgentKind[];
   needsNetwork: boolean;
   headroom: Headroom;
   /**
@@ -81,6 +82,9 @@ export function chooseAgent(input: {
    */
   agyAvailable?: boolean;
 }): Choice {
+  if (input.permittedAgents?.length === 1 && input.permittedAgents[0] === 'claude') {
+    return { agent: 'claude', because: '作業場のファイルだけを編集する制限モードで任せられる Claude を使います。検査は IRIS が隔離して実行します。' };
+  }
   const { claudeWeekPercent: claude, codexWeekPercent: codex } = input.headroom;
   const agy = input.agyAvailable === true;
 

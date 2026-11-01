@@ -1,3 +1,4 @@
+import { localApiFetch } from '../server/core/owner_access.js';
 /**
  * HTTP smoke test against a running IRIS backend.
  *
@@ -5,10 +6,10 @@
  * exercises the live server end to end, including the real AI provider. It
  * therefore costs a real API call.
  *
- * Run: npm run smoke        (defaults to http://localhost:3002)
+ * Run: npm run smoke        (defaults to http://127.0.0.1:3002)
  *      IRIS_URL=... npm run smoke
  */
-const BASE = process.env.IRIS_URL || `http://localhost:${process.env.PORT || 3002}`;
+const BASE = process.env.IRIS_URL || `http://127.0.0.1:${process.env.PORT || 3002}`;
 
 let passed = 0;
 let failed = 0;
@@ -24,7 +25,7 @@ function check(name: string, condition: boolean, detail?: string) {
 }
 
 async function api(path: string, init?: RequestInit) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await localApiFetch(`${BASE}${path}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers || {}) },
   });

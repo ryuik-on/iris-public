@@ -53,15 +53,21 @@ export class DelegatedRunStore {
    * 始まりの時刻を持たずに並ぶ。数えるときに、走った時間が測れないものが
    * 混ざる方が、行が一つ足りないより悪い。
    */
-  finish(id: string, input: { stopReason: string | null; exitCode: number | null; usd: number | null; endedAt: string }): void {
+  /**
+   * `model` は、走っている間に転記から分かる。**始まりの時点では分からない**（CLI の
+   * 既定のモデルで走ると、指定が無い）。終わりに分かった名前を書き足す —— モデルごとの
+   * 実績（`telemetry_service` と `model_advisor`）は、この名前が無いと「どのモデルか」を
+   * 言えず、20 件の委任がすべて名無しで残っていた（2026-10-02）。
+   */
+  finish(id: string, input: { stopReason: string | null; exitCode: number | null; usd: number | null; endedAt: string; model?: string | null }): void {
     this.db
       .prepare(
         `UPDATE delegated_runs
             SET state = 'stopped', stop_reason = @stopReason, exit_code = @exitCode,
-                usd = @usd, ended_at = @endedAt
+                usd = @usd, ended_at = @endedAt, model = COALESCE(@model, model)
           WHERE id = @id`
       )
-      .run({ id, ...input });
+      .run({ id, model: null, ...input });
   }
 
   /**

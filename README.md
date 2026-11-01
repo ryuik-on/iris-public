@@ -6,6 +6,7 @@ AI の CLI はセッションごとに記憶が消える。同じ機械で 3 つ
 IRIS はその記憶を機械の中に置く。各 CLI は起動時に `GET /api/briefing` を読み、学んだことを `POST /api/memory` で書き戻す。
 
 - **クラウドに繋がない。** 127.0.0.1:3002 でしか喋らない。launchd で常駐し、再起動しても上がる
+- **同じ Mac の中でも鍵が要る。** ループバックからの呼び出しにも、所有者だけが読める鍵を求める。Host と Origin も検査し、DNS rebinding や他サイトからの呼び出しを断る（`docs/security-operations.md`）
 - **記録には出所が要る。** `provenance` は `measured`（測った）／`user`（本人が言った）／`external`（外部資料）／`inferred`（推論）。**`measured` に `evidence` が無ければ `inferred`・確度 0.7 に自動で落とす**
 - **繋がらない相手のための退避経路。** サンドボックス内で 127.0.0.1 を塞ぐ CLI があるので、同じ内容を 5 分ごとに `~/.iris/briefing.json` へ書き出す
 - 使用量の監視（各 CLI の週間・5時間窓）、予算ゲート、委任（どの作業をどの CLI に渡すか）、カレンダーの乖離検出、家計メールの取込と照合、音声（Swift）まで含む
@@ -167,18 +168,19 @@ codex  mcp add              iris -- npx tsx <このリポジトリ>/scripts/iris
 - **監視は試験を数えずに名前で言う。** 授業は一度に七十件出るので数えるしかないが、
   「欠け1」では動けない
 
-## 規模（元リポジトリの実測、2026-09-28）
+## 規模（元リポジトリの実測、2026-11-02）
 
 | | |
 | --- | --- |
 | 開始 | 2026-08-18 |
-| コミット | **456** |
-| ソース | 263 ファイル / 約 73079 行（.ts / .tsx） |
-| テスト | `scripts/test-*.ts` × **88**。`npm test` が直列で全部回す |
+| コミット | **606** |
+| ソース | 346 ファイル / 約 87784 行（.ts / .tsx） |
+| テスト | 元リポジトリは `scripts/test-*.ts` × **124**。この写しには **122**（公開しない経路のテスト2本を除く）。`npm test` はこのうち `test-allowance-gate.ts`・`test-security-http.ts`・`test-verification-isolation.ts` 以外を直列で回し、後ろ2本は `npm run test:security`（実サーバと macOS の隔離環境が要る） |
 | 構成 | TypeScript（Express + React/Vite）／Swift（音声認識アプリ・menubar）／launchd |
 
-**このリポジトリは公開用の写しで、コミット履歴を持ちません。** 元リポジトリの履歴には個人の家計・予定・氏名が
+**このリポジトリは公開用の写しで、元リポジトリのコミット履歴は含みません。** 元リポジトリの履歴には個人の家計・予定・氏名が
 テストフィクスチャとして混入した時期があり、除去済みですが履歴には残るため、履歴ごと公開しない判断をしました。
+ここにあるコミットは、公開用に作り直した写しを更新した記録だけです。
 このツリーからは実額・氏名・勤務先・研究室名・ダッシュボードの実物画像を取り除いています。
 
 ## 動かす
@@ -187,8 +189,11 @@ codex  mcp add              iris -- npx tsx <このリポジトリ>/scripts/iris
 cp .env.example .env   # API キーを入れる
 npm ci
 npm run dev            # server + client
-npm test               # 全テスト
+npm test               # テスト（隔離環境が要るものは npm run test:security）
 ```
+
+API は同じ Mac の中からでも鍵が要るので、`curl` で直接は叩けない。ターミナルからは鍵を自分で付ける
+`npm run --silent iris:request -- GET /api/briefing` を使う（本文は標準入力で渡す。鍵をコマンド引数に書かない）。
 
 ## 構成
 

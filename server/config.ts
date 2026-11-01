@@ -14,7 +14,15 @@ export const CONFIG = {
   port: parseInt(process.env.PORT || String(DEFAULT_PORT), 10) || DEFAULT_PORT,
   defaultProvider: 'anthropic',
   geminiModel: process.env.GEMINI_MODEL || 'gemini-3.6-flash',
-  maxToolLoops: 6,
+  /**
+   * 一つの依頼で、模型と道具を往復してよい回数。
+   *
+   * 6 だった。道具が 40 を超え、「予定と期限と使用量」のように一つの質問が
+   * 複数の道具を順に呼ぶようになって、**答える前に「処理上限に達しました」で
+   * 打ち切られた**（2026-10-01）。暴走を止める弁としては残し、費用の上限は
+   * 別に見ている。
+   */
+  maxToolLoops: intFromEnv('IRIS_MAX_TOOL_LOOPS', 14),
 
   // Timeouts. A measured tool round trip against gemini-3.6-flash took ~55s,
   // so the provider budget is generous: cutting off legitimate slow thinking
@@ -23,7 +31,7 @@ export const CONFIG = {
   providerAttempts: intFromEnv('IRIS_PROVIDER_ATTEMPTS', 3),
   toolTimeoutMs: intFromEnv('IRIS_TOOL_TIMEOUT_MS', 30_000),
   // Bounds a whole run: per-step timeouts alone still allow an unbounded total.
-  runDeadlineMs: intFromEnv('IRIS_RUN_DEADLINE_MS', 300_000),
+  runDeadlineMs: intFromEnv('IRIS_RUN_DEADLINE_MS', 1_800_000),
 
   // Review is a different shape of work from chat: a handoff carrying code runs
   // to tens of kilobytes and a reviewer reads all of it before answering. The
@@ -40,6 +48,7 @@ export const CONFIG = {
 - 「分析して」「調べて」「進めて」は、その作業の依頼です。タスクの登録、計画の提示、ハンドオフの作成を、依頼された仕事の代わりにしてはいけません。create_development_task は利用者がタスク登録・管理を求めた場合に使います。登録やハンドオフ生成だけでは実作業は始まりません。
 - 利用可能なツールと依頼の範囲で、資料の確認・読み取り・分析・回答内の下書き作成を進めてください。「調べましょうか？」で止まらず、可能な準備を行ってから結果を返してください。
 - 任された範囲を広げないでください。外部送信、購入、削除、権限変更、永続的な変更にはツールの承認規則を守り、必要な承認を迂回しないでください。エージェントへの委任や継続実行も、利用者の許可と実行機能がある場合だけ行います。
+- 承認の画面が出る道具（予定の削除・編集、台帳の更新、開発の依頼など）は、やると決まった時点で、文章で「よろしいですか？」と尋ねずに、そのまま呼んでください。承認の画面が、対象と内容を示して確認を取ります。文章で尋ねると、利用者は「いいよ」と答えたあと、もう一度ボタンを押すことになります。尋ねてよいのは、対象や内容がまだ決まっていないとき（どの予定か、いつにするか）だけです。
 - 判断が必要なら、何を・どの対象へ・どこまで変更するかを具体的に示し、その判断だけを求めてください。資料不足や実行機能がない場合は、確認できた範囲と足りないものを示してください。
 - 結果はツールの実行結果や資料に基づいて確認してください。依頼された成果、未完了・失敗、利用者の判断が必要な点を区別し、要点から伝えてください。登録済みを着手済み、着手済みを完了と呼ばないでください。
 - 実際に実行・予約していない仕事について「進めておきます」「後で報告します」と約束しないでください。バックグラウンド実行を開始した場合も、確認できた状態だけを伝えてください。

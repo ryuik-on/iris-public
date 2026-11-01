@@ -25,7 +25,7 @@ function section(name: string) { console.log('\n▸ ' + name); }
 
 const NOW = new Date('2026-09-07T04:19:00Z');
 const base = {
-  uid: 'u1', title: 'ガウス', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
+  uid: 'u1', title: 'コスモ', start: '2026-09-08T15:00', end: '2026-09-08T16:00',
   allDay: false, timeZone: 'Asia/Tokyo', now: NOW,
 };
 const lines = (ics: string) => ics.split('\r\n');
@@ -126,7 +126,7 @@ section('置く先と、上書きしないこと');
 
   const out = await client.createEvent({
     calendarUrl: 'https://p01-caldav.icloud.com/123/calendars/home',
-    title: 'ガウス', start: '2026-09-08T15:00', end: null,
+    title: 'コスモ', start: '2026-09-08T15:00', end: null,
     allDay: false, timeZone: 'Asia/Tokyo', now: NOW,
   });
 
@@ -185,7 +185,7 @@ section('iCloud 以外へは、資格情報を渡さない');
   const lookalike = await attempt('https://icloud.com.attacker.example/c/home');
   check('似せた名前も断る', lookalike.sent.length === 0, lookalike.sent);
 
-  const real = await attempt('https://p156-caldav.icloud.com/17648406100/calendars/home');
+  const real = await attempt('https://p156-caldav.icloud.com/12345678901/calendars/home');
   check('口座ごとのホストは通す', real.sent.length === 1 && real.refused === null, [real.sent, real.refused]);
 }
 

@@ -90,7 +90,7 @@ type Block =
   | { kind: 'p'; lines: string[] }
   | { kind: 'h'; level: number; text: string }
   | { kind: 'ul'; items: string[] }
-  | { kind: 'ol'; items: string[] }
+  | { kind: 'ol'; items: string[]; numbers: number[] }
   | { kind: 'code'; lines: string[]; lang: string }
   | { kind: 'table'; head: string[]; rows: string[][] };
 
@@ -160,11 +160,14 @@ function toBlocks(text: string): Block[] {
       continue;
     }
 
-    const numbered = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    // 番号は書かれたものを使う。項目の間に説明の段落が挟まると一覧が途切れて
+    // 別の一覧になり、数え直すと全部「1.」になる（利用者の指摘 2026-10-10）。
+    const numbered = /^\s*(\d+)[.)]\s+(.*)$/.exec(line);
     if (numbered) {
       const prev = last();
-      if (prev?.kind === 'ol') prev.items.push(numbered[1]);
-      else blocks.push({ kind: 'ol', items: [numbered[1]] });
+      const written = Number(numbered[1]);
+      if (prev?.kind === 'ol') { prev.items.push(numbered[2]); prev.numbers.push(written); }
+      else blocks.push({ kind: 'ol', items: [numbered[2]], numbers: [written] });
       i++;
       continue;
     }
@@ -254,7 +257,7 @@ export function Markdown({ text }: { text: string }) {
                 {block.items.map((item, ii) => (
                   <li key={ii} className="flex gap-2">
                     <span className="hud-mono text-[10px] text-sky-400/50 pt-[3px] select-none shrink-0">
-                      {block.kind === 'ol' ? `${ii + 1}.` : '·'}
+                      {block.kind === 'ol' ? `${block.numbers[ii] ?? ii + 1}.` : '·'}
                     </span>
                     <span className="min-w-0">{renderInline(item, `l${bi}-${ii}`)}</span>
                   </li>

@@ -65,24 +65,56 @@ export function sessionsFor(
 
 const ROOT_MARKERS = ['.git', 'CLAUDE.md', 'AGENTS.md', 'package.json'];
 
+/**
+ * 道の解決は、30 秒だけ覚える。
+ *
+ * `GET /api/fdp/tasks` は課題ごとに、全セッションの cwd を `realpathSync` /
+ * `statSync` で解く。課題 × セッションの数だけ同期の fs 呼び出しが続き、
+ * イベントループを塞いだ（記録 2026-10-02、最長 35 秒）。同じ cwd は何度も
+ * 出るし、道の実体は秒の単位では動かない。
+ */
+const MEMO_MS = 30_000;
+const MEMO_MAX = 2000;
+function memoised<T>(memo: Map<string, { at: number; value: T }>, key: string, compute: () => T): T {
+  const held = memo.get(key);
+  const now = Date.now();
+  if (held && now - held.at < MEMO_MS) return held.value;
+  const value = compute();
+  if (memo.size >= MEMO_MAX) memo.clear();
+  memo.set(key, { at: now, value });
+  return value;
+}
+const canonicalMemo = new Map<string, { at: number; value: string | null }>();
+const rootMemo = new Map<string, { at: number; value: string }>();
+
+/** 覚えたものを捨てる。テスト用。 */
+export function clearLinkMemo(): void {
+  canonicalMemo.clear();
+  rootMemo.clear();
+}
+
 /** その場所を含む、いちばん近いプロジェクトの根。無ければその場所自身。 */
 function nearestProjectRoot(place: string): string {
-  let dir = place;
-  for (;;) {
-    if (ROOT_MARKERS.some((m) => existsSync(join(dir, m)))) return dir;
-    const up = dirname(dir);
-    if (up === dir) return place;
-    dir = up;
-  }
+  return memoised(rootMemo, place, () => {
+    let dir = place;
+    for (;;) {
+      if (ROOT_MARKERS.some((m) => existsSync(join(dir, m)))) return dir;
+      const up = dirname(dir);
+      if (up === dir) return place;
+      dir = up;
+    }
+  });
 }
 
 /** 実体の道。無ければ null —— 消えた資料入れのセッションは、どこにも紐付かない。 */
 function canonical(p: string): string | null {
-  try {
-    const real = realpathSync(resolve(p));
-    statSync(real);
-    return real;
-  } catch {
-    return null;
-  }
+  return memoised(canonicalMemo, p, () => {
+    try {
+      const real = realpathSync(resolve(p));
+      statSync(real);
+      return real;
+    } catch {
+      return null;
+    }
+  });
 }

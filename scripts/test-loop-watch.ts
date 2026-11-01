@@ -85,6 +85,50 @@ section('名乗った仕事のせいにする');
   eq('終わりを二度呼んでも壊れない', watch.recent()[0]?.during, 'b');
 }
 
+section('一拍の前に終わった区間が塞いだなら、その区間のせいにする');
+{
+  // self.check が自分の口を叩き、叩かれた側が同期で塞いでから応答を返す。
+  const { watch, advance } = clocked();
+  watch.start();
+  const outer = watch.begin('self.check');
+  const inner = watch.begin('http GET /api/center');
+  advance(5000);
+  inner();
+  watch.tick();
+  outer();
+  eq('待っていた外側ではなく、塞いだ要求に付く', watch.recent()[0]?.during, 'http GET /api/center');
+}
+{
+  const { watch, advance } = clocked();
+  watch.start();
+  const outer = watch.begin('self.check');
+  const quick = watch.begin('http GET /api/build');
+  advance(50);
+  quick();
+  advance(5000);
+  watch.tick();
+  outer();
+  eq('塞ぐ前に終わった区間には付けない', watch.recent()[0]?.during, 'self.check');
+}
+{
+  const { watch, advance } = clocked();
+  watch.start();
+  watch.during('briefing.write', () => { advance(4000); });
+  watch.tick();
+  eq('同期の仕事が一拍の前に終わっても、その名前が付く', watch.recent()[0]?.during, 'briefing.write');
+}
+{
+  const { watch, advance } = clocked();
+  watch.start();
+  const end = watch.begin('old');
+  advance(4000);
+  end();
+  watch.tick();
+  advance(4000);
+  watch.tick();
+  eq('前の一拍で終わった区間は、次の停止に持ち越さない', watch.recent().map((s) => s.during), [null, 'old']);
+}
+
 section('名乗らない停止を「無かった」にしない');
 {
   const { watch, advance } = clocked();

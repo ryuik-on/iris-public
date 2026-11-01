@@ -16,6 +16,16 @@
  * しない** —— 名前の無い停止が続くなら、名乗っていない仕事が残っている。
  */
 
+import { loadavg, cpus } from 'os';
+
+/** 直近 1 分の負荷 ÷ 計算の芯の数。1 なら、芯が全部ふさがっている。 */
+function machineLoad(): number | undefined {
+  try {
+    const cores = cpus().length;
+    return cores > 0 ? Math.round((loadavg()[0] / cores) * 100) / 100 : undefined;
+  } catch { return undefined; }
+}
+
 export interface Stall {
   /** 止まりはじめた時刻（ISO）。 */
   at: string;
@@ -23,6 +33,11 @@ export interface Stall {
   ms: number;
   /** そのとき走っていた仕事の名前。名乗っていなければ null。 */
   during: string | null;
+  /**
+   * 止まったときの、この機械の混み具合（直近 1 分の負荷 ÷ 計算の芯の数）。
+   * 機械全体が忙しいときの停止は、サーバーの作りの問題ではない。無ければ不明。
+   */
+  load?: number;
 }
 
 /** 長くかかった一区間。**停止とは別の観点** —— 誰が時間を使ったか。 */
@@ -38,6 +53,10 @@ export class LoopWatch {
   private stalls: Stall[] = [];
   private slow: SlowSpan[] = [];
   private lastAt = 0;
+  /** 最後に時刻を見た瞬間（一拍、または区間の終わり）。 */
+  private lastMarkAt = 0;
+  /** この一拍のあいだに終わった区間のうち、終わる直前の空きがいちばん長かったもの。 */
+  private ended: { label: string; gap: number } | null = null;
 
   constructor(
     /** 目を覚ます間隔。短すぎると自分が負荷になる。 */
@@ -54,6 +73,7 @@ export class LoopWatch {
   start(): void {
     if (this.timer) return;
     this.lastAt = this.now();
+    this.lastMarkAt = this.lastAt;
     this.timer = setInterval(() => this.tick(), this.everyMs);
     this.timer.unref?.();
   }
@@ -69,12 +89,29 @@ export class LoopWatch {
     const at = this.now();
     const late = at - this.lastAt - this.everyMs;
     this.lastAt = at;
+    /*
+     * 止めた区間が、一拍が来る前に終わっていることがある。
+     *
+     * 自分の口を叩く `self.check` の最中に、叩かれた `/api/center` が同期で数秒塞ぎ、
+     * 応答を返して名乗りを下ろす。そのあとで一拍が来ると、上に残っているのは
+     * 待っていただけの `self.check` で、停止はそちらのせいになる
+     * （2026-10-17、「self.check でサーバーが止まった」が繰り返し上がった。
+     * `self.check` 自身の同期の仕事は、小さな JSON を読むだけ）。
+     *
+     * 塞いだ時間は、時刻を見た二点のあいだに入る。その空きを閉じたのが区間の
+     * 終わりなら、塞いだのはその区間。一拍の方が閉じたなら、今までどおり上の名乗り。
+     */
+    const tail = at - this.lastMarkAt;
+    const blamed = this.ended && this.ended.gap > tail ? this.ended.label : null;
+    this.lastMarkAt = at;
+    this.ended = null;
     if (late < this.thresholdMs) return;
     this.stalls.push({
       // 止まりはじめた時刻。**気づいた時刻ではない。**
       at: new Date(at - late).toISOString(),
       ms: late,
-      during: this.running[this.running.length - 1] ?? null,
+      during: blamed ?? this.running[this.running.length - 1] ?? null,
+      load: machineLoad(),
     });
     if (this.stalls.length > this.keep) this.stalls.splice(0, this.stalls.length - this.keep);
   }
@@ -93,6 +130,10 @@ export class LoopWatch {
       done = true;
       const at = this.running.lastIndexOf(label);
       if (at >= 0) this.running.splice(at, 1);
+      const endedAt = this.now();
+      const gap = endedAt - this.lastMarkAt;
+      if (!this.ended || gap > this.ended.gap) this.ended = { label, gap };
+      this.lastMarkAt = endedAt;
       /*
        * かかった時間も残す。**停止の名前付けとは別の観点。**
        *
@@ -100,7 +141,7 @@ export class LoopWatch {
        * 「不明」として残る（実測 2026-09-28、4.2秒 の停止が名乗り無しだった）。
        * 4秒 塞いだなら、**4秒 かかった区間のどれかがそれ** —— そこから辿れる。
        */
-      const took = this.now() - startedAt;
+      const took = endedAt - startedAt;
       if (took >= this.slowMs) {
         this.slow.push({ at: new Date(startedAt).toISOString(), ms: took, label });
         if (this.slow.length > this.keep) this.slow.splice(0, this.slow.length - this.keep);

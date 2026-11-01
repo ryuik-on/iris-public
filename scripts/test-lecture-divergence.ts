@@ -190,7 +190,7 @@ section('題名を科目と番号に分ける');
   eq('単発', JSON.stringify(lectureKey('神経5')), JSON.stringify({ subject: '神経', from: 5, to: 5, annotated: false }));
   eq('接尾の実習は落とす', lectureKey('病理学Ⅱ41-42実習')?.subject, '病理学Ⅱ');
   eq('注記は人の意図', lectureKey('循環器1-3（再）')?.annotated, true);
-  eq('番号が無ければ授業ではない', lectureKey('琉大祭'), null);
+  eq('番号が無ければ授業ではない', lectureKey('大学祭'), null);
   eq('予備も授業ではない', lectureKey('病理学Ⅱ予備'), null);
   eq('半角の中点と★を揃える', lectureKey('★腎･泌1')?.subject, '腎・泌');
 }
@@ -201,14 +201,14 @@ section('余分は科目と番号で見る（意図して残したものは鳴�
     ...base,
     from: '2026-09-25', to: '2026-11-20',
     lectures: [
-      { title: '琉大祭準備', date: '2026-09-25', period: null, start: null, startBasis: 'measured' },
+      { title: '大学祭準備', date: '2026-09-25', period: null, start: null, startBasis: 'measured' },
       { title: '★循環器1', date: '2026-10-29', period: 5, start: '14:00', startBasis: 'measured' },
       { title: '循環器2', date: '2026-10-29', period: 6, start: '15:10', startBasis: 'measured' },
       { title: '循環器4', date: '2026-11-12', period: 1, start: '08:30', startBasis: 'measured' },
       { title: '病理学Ⅱ予備', date: '2026-11-19', period: 6, start: '15:10', startBasis: 'measured' },
     ],
     events: [
-      { title: '琉大祭', start: '2026-09-26' },
+      { title: '大学祭', start: '2026-09-26' },
       { title: '循環器1-3（再）', start: '2026-10-30T14:00:00+09:00' },
       { title: '病理学Ⅱ予備', start: '2026-11-18T14:00:00+09:00' },
       { title: '循環器4-6', start: '2026-11-11T08:30:00+09:00' },
@@ -218,7 +218,7 @@ section('余分は科目と番号で見る（意図して残したものは鳴�
     ],
   });
   eq('余分は古い層の一件だけ', d.surplus.map((g) => g.title).join(), '循環器4-6');
-  eq('琉大祭は部分一致で鳴らない', d.surplus.some((g) => g.title === '琉大祭'), false);
+  eq('大学祭は部分一致で鳴らない', d.surplus.some((g) => g.title === '大学祭'), false);
   eq('注記付きは鳴らない', d.surplus.some((g) => g.title.includes('（再）')), false);
   eq('予備は鳴らない', d.surplus.some((g) => g.title.includes('予備')), false);
 }

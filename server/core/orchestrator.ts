@@ -1,3 +1,6 @@
+import { ToolTrust } from './types.js';
+import { compactToolHistory } from './history_compaction.js';
+import { withConversation } from './conversation_scope.js';
 import { describeApproval } from './approval_text.js';
 import { AIProvider, SystemPrompt } from '../providers/base.js';
 import { ToolRegistry } from '../tools/registry.js';
@@ -67,7 +70,12 @@ export class StaleApprovalError extends Error {
  * situation — a suggestion the user accepted, or a rule that fired. The
  * difference is not cosmetic: it decides which tools exist for the run.
  */
-export type RunOrigin = 'user' | 'inferred';
+/**
+ * `night` は、利用者が寝ている間の自動作業。**読むだけの道具（READ）しか使えない。**
+ * `inferred` は承認つきの書き込み（WRITE）までは届くが、夜の作業は、見ている人がいない
+ * ので、承認の待ち行列を作ること自体をさせない。
+ */
+export type RunOrigin = 'user' | 'inferred' | 'night';
 
 /**
  * How the request reached IRIS, which decides only the shape of the reply.
@@ -218,6 +226,7 @@ export class JarvisOrchestrator {
 
   /** Whether a run of this origin may use a tool of this risk level. */
   private permits(origin: RunOrigin, riskLevel: RiskLevel): boolean {
+    if (origin === 'night') return riskLevel === RiskLevel.READ;
     return origin === 'user' || !FORBIDDEN_FOR_INFERRED.has(riskLevel);
   }
 
@@ -243,7 +252,7 @@ export class JarvisOrchestrator {
 
     // Carried across the approval: a run that began as a guess is still a
     // guess after the user allowed one write.
-    return this.runLoop(sessionId, pendingRecord.conversationId, history, executedTools, pendingRecord.origin);
+    return this.runLoop(sessionId, pendingRecord.conversationId, history, executedTools, pendingRecord.origin, pendingRecord.channel);
   }
 
   /**
@@ -474,7 +483,9 @@ export class JarvisOrchestrator {
               argsJson: JSON.stringify(call.args),
               riskLevel,
               historyJson: JSON.stringify(history),
-              origin,
+              // 夜の実行は READ しか持たないので、ここへは来ない。型の上だけ、推定として記録する。
+              origin: origin === 'night' ? 'inferred' : origin,
+              channel,
             });
 
             return {
@@ -504,18 +515,27 @@ export class JarvisOrchestrator {
           // Said before the call, not after: the point of this is the seconds
           // during which it is happening.
           stream?.phase('tool_execution');
-          const outcome = await this.toolRegistry.executeTool(call.name, call.args, {
+          const outcome = await withConversation(conversationId, () => this.toolRegistry.executeTool(call.name, call.args, {
             signal: deadline.signal,
-            timeoutMs: deadline.clamp(CONFIG.toolTimeoutMs),
+            timeoutMs: deadline.clamp(this.toolRegistry.get(call.name)?.timeoutMs ?? CONFIG.toolTimeoutMs),
             onRetry: (info) => this.onEvent?.({ type: 'tool.retry', ...info }),
-          });
+          }));
           const toolResultData = this.toToolResult(call.name, outcome);
           executedTools.push({ name: call.name, args: call.args, result: toolResultData });
           history.push({ role: 'tool', toolName: call.name, toolCallId: call.id, toolResult: toolResultData });
         }
       }
 
-      return { status: 'completed', reply: '処理上限に達しました。', executedTools, sessionId, conversationId };
+      // 何も言わずに打ち切らない。何をどこまでやったかと、続け方を返す。
+      const used = [...new Set(executedTools.map((t) => t.name))];
+      return {
+        status: 'completed',
+        reply:
+          `道具を呼ぶ回数の上限（${this.maxLoops} 回）に達したので、ここで止めました。` +
+          (used.length ? `ここまでに使った道具: ${used.join('、')}。` : '') +
+          '「続けて」と送ると、ここからの続きをやります。',
+        executedTools, sessionId, conversationId,
+      };
     } finally {
       deadline.dispose();
       // A run that reached the provider but produced nothing still reports its
@@ -592,21 +612,45 @@ export class JarvisOrchestrator {
           stream.delta(text);
         }
       : undefined;
+    const routerOwnsTimeout = provider.ownsProviderTimeout === true;
+    const resetForFailover = stream
+      ? () => {
+          stream.reset();
+          sawDelta = false;
+        }
+      : undefined;
 
     const response = await retry(
       () =>
-        withTimeout(
+        (routerOwnsTimeout
+          ? (() => {
+              if (stream) {
+                stream.reset();
+                sawDelta = false;
+              }
+              return provider.generateResponse(
+                compactToolHistory(history, undefined, (name) => this.toolRegistry.get(name)?.trust === ToolTrust.TRUSTED_CORE),
+                availableTools,
+                system,
+                deadline.signal,
+                forward,
+                resetForFailover
+              );
+            })()
+          : withTimeout(
           (signal) => {
             if (stream) {
               stream.reset();
               sawDelta = false;
             }
             return provider.generateResponse(
-              history,
+              // 古い往復の大きな道具の結果は、見出しにして送る（写しだけ。元の履歴は変えない）。
+              compactToolHistory(history, undefined, (name) => this.toolRegistry.get(name)?.trust === ToolTrust.TRUSTED_CORE),
               availableTools,
               system,
               signal,
-              forward
+              forward,
+              resetForFailover
             );
           },
           {
@@ -615,14 +659,16 @@ export class JarvisOrchestrator {
             sideEffectUnknown: false,
             signal: deadline.signal,
           }
-        ).catch((err) => {
+        )).catch((err) => {
           if (err instanceof TimeoutError) {
             this.onEvent?.({ type: 'provider.timeout', timeoutMs: err.timeoutMs });
           }
           throw err;
         }),
       {
-        attempts: CONFIG.providerAttempts,
+        // The router tries every eligible model once. Re-entering it here
+        // would retry an already-timed-out candidate after failover.
+        attempts: routerOwnsTimeout ? 1 : CONFIG.providerAttempts,
         label: 'provider',
         signal: deadline.signal,
         onRetry: ({ attempt, attempts, delayMs, error }) =>

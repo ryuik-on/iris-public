@@ -69,9 +69,9 @@ function main() {
 
   section('終日');
   {
-    const day = freeForDay(D, [{ title: '琉大祭', allDay: true, calendar: '自宅' }]);
+    const day = freeForDay(D, [{ title: '大学祭', allDay: true, calendar: '自宅' }]);
     eq('その日は空き無し', day.slots.length, 0);
-    eq('何が潰しているかを言う', day.note, '琉大祭（終日）');
+    eq('何が潰しているかを言う', day.note, '大学祭（終日）');
 
     /**
      * 祝日だけは潰さない。予定ではなく印で、潰すと休日が一日中埋まって見える。
@@ -87,7 +87,7 @@ function main() {
     const text = asPlainText(
       [
         { date: '2026-09-01', slots: [{ from: '13:00', to: '15:00' }], note: null },
-        { date: '2026-09-02', slots: [], note: '琉大祭（終日）' },
+        { date: '2026-09-02', slots: [], note: '大学祭（終日）' },
       ],
       ['google', 'icloud'],
       new Date('2026-09-01T14:30:00')
@@ -95,7 +95,7 @@ function main() {
     eq(
       '素の文字で、出典と時刻つき',
       text,
-      '9/1(火) 13:00-15:00\n9/2(水) 空きなし  ※ 琉大祭（終日）\n\n（google・icloud から作成 / 2026-09-01 14:30 時点）'
+      '9/1(火) 13:00-15:00\n9/2(水) 空きなし  ※ 大学祭（終日）\n\n（google・icloud から作成 / 2026-09-01 14:30 時点）'
     );
   }
 

@@ -83,6 +83,13 @@ export interface RuleEvaluation {
 export interface ProactiveOptions {
   now?: () => number;
   onEvent?: (event: { type: string; detail?: Record<string, any> }) => void;
+  /**
+   * Called once per `evaluate()` with everything that fired in it, when
+   * anything did. Speaking first hangs off this rather than off each
+   * `proactive.suggested` event, so that three rules firing in one pass
+   * become one conversation instead of three.
+   */
+  onCycle?: (fired: ProactiveSuggestion[]) => void;
   /** Bounds the queue; a user who never looks must not accumulate forever. */
   maxPending?: number;
 }
@@ -120,10 +127,13 @@ export class ProactiveService {
    * did not, the gate that stopped it.
    */
   evaluate(snapshot: ContextSnapshot = this.context.current()): RuleEvaluation[] {
-    return [...this.rules.values()].map((rule) => this.evaluateRule(rule, snapshot));
+    const fired: ProactiveSuggestion[] = [];
+    const evaluations = [...this.rules.values()].map((rule) => this.evaluateRule(rule, snapshot, fired));
+    if (fired.length > 0) this.options.onCycle?.(fired);
+    return evaluations;
   }
 
-  private evaluateRule(rule: ProactiveRule, snapshot: ContextSnapshot): RuleEvaluation {
+  private evaluateRule(rule: ProactiveRule, snapshot: ContextSnapshot, fired: ProactiveSuggestion[]): RuleEvaluation {
     const last = this.lastFiredAt.get(rule.id);
     if (last !== undefined && this.now() - last < rule.cooldownMs) {
       return { ruleId: rule.id, fired: false, blockedBy: 'cooldown' };
@@ -166,11 +176,11 @@ export class ProactiveService {
       });
     }
 
-    this.enqueue(rule, because);
+    fired.push(this.enqueue(rule, because));
     return { ruleId: rule.id, fired: true };
   }
 
-  private enqueue(rule: ProactiveRule, because: ProactiveSuggestion['because']) {
+  private enqueue(rule: ProactiveRule, because: ProactiveSuggestion['because']): ProactiveSuggestion {
     const now = this.now();
     this.lastFiredAt.set(rule.id, now);
 
@@ -191,6 +201,7 @@ export class ProactiveService {
       type: 'proactive.suggested',
       detail: { ruleId: rule.id, suggestionId: suggestion.id },
     });
+    return suggestion;
   }
 
   listPending(): ProactiveSuggestion[] {

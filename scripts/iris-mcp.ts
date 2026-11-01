@@ -23,6 +23,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { IRIS_TOOLS, callIrisTool, IrisIo } from '../server/core/mcp_server.js';
+import { localAuthHeaders } from '../server/core/owner_access.js';
 
 const BASE = process.env.IRIS_BASE ?? 'http://127.0.0.1:3002';
 const OFFLINE = join(homedir(), '.iris', 'briefing.json');
@@ -40,7 +41,8 @@ const io: IrisIo = {
   async request(method, path, body) {
     const res = await fetch(`${BASE}${path}`, {
       method,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+      headers: { ...localAuthHeaders(BASE), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      redirect: 'error',
       body: body === undefined ? undefined : JSON.stringify(body),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });

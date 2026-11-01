@@ -21,6 +21,7 @@ import { randomBytes } from 'crypto';
  */
 
 export interface StoredTokens {
+  issuer?: string;
   access_token: string;
   refresh_token?: string;
   expires_in?: number;
@@ -71,6 +72,13 @@ export class OAuthStore {
     } catch {
       return undefined;
     }
+  }
+
+  bindLegacyIssuer(serverId: string, issuer: string): void {
+    const tokens = this.getTokens(serverId);
+    if (!tokens || tokens.issuer) return;
+    this.db.prepare('UPDATE oauth_tokens SET tokens_json = ? WHERE server_id = ?')
+      .run(JSON.stringify({ ...tokens, issuer }), serverId);
   }
 
   /**

@@ -30,6 +30,12 @@ const html = (text: string) => renderToStaticMarkup(<Markdown text={text} />);
 const plain = (text: string) => html(text).replace(/<[^>]+>/g, '');
 
 function main() {
+  section('番号は書かれたとおりに出す');
+  const numbers = (text: string) => [...html(text).matchAll(/>(\d+)\.<\/span>/g)].map((m) => m[1]);
+  eq('説明の段落が挟まっても 1, 2, 3 のまま',
+    numbers('1. 一つめ\n   説明\n2. 二つめ\n   説明\n3. 三つめ'), ['1', '2', '3']);
+  eq('続き物の一覧も書かれた番号で出る', numbers('4. よっつめ\n5. いつつめ'), ['4', '5']);
+
   section('囲まれた文章が消えない');
   eq(
     '二つの強調が並んでも中身が残る',

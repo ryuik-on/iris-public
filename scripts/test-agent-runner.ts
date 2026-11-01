@@ -262,7 +262,7 @@ function main() {
     check('nor is a compile error', !looksLikeQuotaExhaustion('error TS2304: Cannot find name AGENTS'));
     check('nor is nothing at all', !looksLikeQuotaExhaustion(''));
     check('edits and commands proceed without a prompt', argv.join(' ').includes('--mode accept-edits'));
-    check('the prompt carries the unattended instructions', argv.some((a) => a.includes('必ず変更をコミット')));
+    check('the prompt carries the unattended instructions', argv.some((a) => a.includes('コミットと隔離された環境での検査')));
 
     // Absent and broken are different failures, and only the second one stops
     // a run. Getting this backwards would either disable the ceiling for the
@@ -336,7 +336,7 @@ function main() {
     // recording it.
     check('the handoff is the second element', argv[1].startsWith('引き継ぎ書の本文'));
     check('followed by the unattended instructions', argv[1].includes(UNATTENDED_INSTRUCTIONS));
-    check('which ask for a commit', argv[1].includes('必ず変更をコミット'));
+    check('parent commits after restricted editing', argv[1].includes('コミットと隔離された環境での検査'));
     check('and say push is forbidden', argv[1].includes('git push` は禁止'));
     check('and to separate verified from unverified', argv[1].includes('確認していないことを完了として報告しない'));
     check('the permission mode is explicit', argv.includes('--permission-mode'));
@@ -347,9 +347,9 @@ function main() {
     // `acceptEdits` covers editing and nothing else. The first live run wrote
     // good code and could not run `bash -n`, the tests, or `git commit` — its
     // work survived only as uncommitted changes in a worktree.
-    check('committing is allowed', argv.includes('Bash(git commit:*)'));
-    check('and staging', argv.includes('Bash(git add:*)'));
-    check('and running the tests', argv.includes('Bash(npm test)'));
+    check('command tools are not offered', !ALLOWED_TOOLS.some((x) => x.startsWith('Bash')));
+    check('restricted mode confines file tools', argv.includes('--restricted'));
+    check('customizations and MCP are disabled', argv.includes('--safe-mode') && argv.includes('--strict-mcp-config'));
 
     // Listed individually, never as a wildcard over git. `Bash(git *)` would
     // cover push, and letting the deny list win that argument is relying on a
@@ -368,7 +368,7 @@ function main() {
      * does not cover them: it matches `test:speech`, not `typecheck`.
      */
     for (const command of ['Bash(npm run build)', 'Bash(npm run typecheck)']) {
-      check(`the agent can run ${command}`, ALLOWED_TOOLS.includes(command));
+      check(`candidate scripts cannot run via ${command}`, !ALLOWED_TOOLS.includes(command));
     }
     // `npm run *` would include `dev`, a watcher that never exits and would
     // spend the whole time limit doing nothing.
@@ -468,6 +468,7 @@ function main() {
     check('and not as the time limit', afterSleep !== 'time_limit');
     check('nor as a dead meter', afterSleep !== 'unmeterable');
     check('the message says the limit was not reached', describeStop('machine_slept', POLICY).includes('時間上限には達していません'));
+    check('a spawn failure is not described as the user stopping it', !describeStop('spawn_failed', POLICY).includes('利用者の指示') && describeStop('spawn_failed', POLICY).includes('起動できませんでした'));
     check('and that resuming is not possible', describeStop('machine_slept', POLICY).includes('予約し直して'));
   }
 

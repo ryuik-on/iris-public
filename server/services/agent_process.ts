@@ -208,6 +208,9 @@ export class AgentProcessService {
     model?: string;
   }): { run: AgentRun } | { refusal: Refusal } {
     const kind: AgentKind = asAgentKind(input.agent);
+    if (kind !== 'claude') {
+      return { refusal: { code: 'isolation_unavailable', message: `${kind} は、コマンドを実行せずに作業場の中だけを編集する方式をまだ確認できていません。無人の実行は Claude の制限モードを使ってください。` } };
+    }
     let repo: string;
     try {
       repo = realpathSync(input.repo);
@@ -376,7 +379,9 @@ export class AgentProcessService {
     });
     child.on('error', (err: any) => {
       this.emit('agent.spawn_failed', { run: id, message: err?.message });
-      this.finish(id, 'stopped_by_user', null);
+      // 起動できなかったことを、「利用者が止めた」と記録しない（実行ファイルの場所が変わって、
+      // 12 件の開発が、そう記録されて止まっていた 2026-10-17）。
+      this.finish(id, 'spawn_failed', null);
     });
 
     const timer = setInterval(() => this.poll(id, startedAtMs), this.options.pollMs ?? DEFAULT_POLL_MS);
@@ -578,10 +583,21 @@ export class AgentProcessService {
     return run;
   }
 
-  /** Whether the repository has nothing uncommitted. */
+  /**
+   * Whether the repository has nothing uncommitted **among tracked files.**
+   *
+   * エージェントは HEAD から作った別の作業ツリーで動くので、本体の変更が
+   * 作業に「混ざる」ことはない。この判定が守っているのは、**人が編集途中の
+   * 変更を知らない土台の上で作業が始まること**だけ。
+   *
+   * 追跡していないファイルはその心配と関係がないのに数えていたので、
+   * 9/11 に置かれたスクリーンショット（`artifacts/`）一つで、このリポジトリへの
+   * 委任が毎回断られていた（実測 2026-09-30、同じタスクが三度登録されて
+   * どれも始まらなかった）。
+   */
   private workingTreeClean(repo: string): boolean {
     try {
-      const out = execFileSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf-8' });
+      const out = execFileSync('git', ['status', '--porcelain', '--untracked-files=no'], { cwd: repo, encoding: 'utf-8' });
       return out.trim().length === 0;
     } catch {
       // A directory git cannot read is not a clean one.

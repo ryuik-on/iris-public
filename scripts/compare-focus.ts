@@ -1,3 +1,4 @@
+import { localApiFetch } from '../server/core/owner_access.js';
 /**
  * Compares IRIS's daily focus against the dashboard it was ported from.
  *
@@ -24,7 +25,7 @@ import { promisify } from 'util';
 const run = promisify(execFile);
 
 const FDP_DIR = process.env.IRIS_FDP_DIR ?? join(homedir(), 'Documents/Founder-Development-Program');
-const IRIS_URL = process.env.IRIS_URL ?? 'http://localhost:3002';
+const IRIS_URL = process.env.IRIS_URL ?? 'http://127.0.0.1:3002';
 
 /** Identifiers the dashboard prints in brackets, per area. */
 const PATTERNS: Array<{ area: string; label: string; re: RegExp }> = [
@@ -55,7 +56,7 @@ async function fdpSelections(): Promise<{ ok: boolean; ids: Record<string, strin
 
 async function irisSelections(): Promise<{ ok: boolean; ids: Record<string, string>; error?: string }> {
   try {
-    const response = await fetch(`${IRIS_URL}/api/focus`, { signal: AbortSignal.timeout(60_000) });
+    const response = await localApiFetch(`${IRIS_URL}/api/focus`, { signal: AbortSignal.timeout(60_000) });
     if (!response.ok) return { ok: false, ids: {}, error: `HTTP ${response.status}` };
     const body: any = await response.json();
     const ids: Record<string, string> = {};

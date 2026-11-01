@@ -56,18 +56,18 @@ function main() {
     eq('empty is not local', isLoopback(''), false);
   }
 
-  section('This machine needs no token');
+  section('Loopback is not an OS user identity');
 
   {
     eq(
-      'loopback is allowed with nothing configured at all',
+      'unconfigured loopback is refused',
       decideAccess({ remoteAddress: '::1', presented: null, expected: null }).allow,
-      true
+      false
     );
     eq(
-      'and is not asked even when a token exists',
+      'loopback also requires the owner credential',
       decideAccess({ remoteAddress: '127.0.0.1', presented: null, expected: 'secret' }).allow,
-      true
+      false
     );
   }
 

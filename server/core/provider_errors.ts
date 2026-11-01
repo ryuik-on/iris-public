@@ -107,6 +107,20 @@ export function classifyProviderError(err: any): ClassifiedProviderError {
   // "You exceeded your current quota, please check your plan and billing
   // details", which a loose match on "billing" would misclassify as a credit
   // problem — pointing the user at the wrong fix.
+  // OpenAI は、残高が尽きたときも **429** で返す（"You have no credits remaining" /
+  // code: insufficient_quota）。下の一般の 429 は「短時間で回復します」と案内する—— 残高切れには
+  // 嘘になり、再試行を重ねて、利用者には「集中しています」としか見えなかった（2026-10-08）。
+  if (/no credits remaining|insufficient_quota/i.test(raw + body)) {
+    return {
+      kind: 'insufficient_credit',
+      message: 'アカウントの残高が不足しています。',
+      guidance: 'プロバイダのコンソール（OpenAI なら Billing）で、残高を足してください。足すまでこの経路は使えません。',
+      configuration: true,
+      retryable: false,
+      raw,
+    };
+  }
+
   if (status === 429 || /RESOURCE_EXHAUSTED|rate_limit_error/i.test(raw + body)) {
     // A per-minute limit recovers on its own; a daily quota does not, and
     // retrying it only burns what is left.

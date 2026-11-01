@@ -52,6 +52,15 @@ export class CalendarUnavailableError extends Error {
 }
 
 /**
+ * Background observation cadence, independent of request-level cache reuse.
+ *
+ * This governs the server's periodic health/context observation only. Direct
+ * callers still read through `CalendarService` immediately (apart from its
+ * short 30-second coalescing cache), and calendar writes call `forget()`.
+ */
+export const CALENDAR_BACKGROUND_OBSERVE_INTERVAL_MS = 60 * 60_000;
+
+/**
  * The cache the Founder Development Program dashboard already maintains.
  *
  * Reading it sidesteps the permission problem entirely: something else has
@@ -265,11 +274,21 @@ export class CalendarService {
      * `/api/schedule`・`/api/calendar`・`/api/travel/next`・
      * `/api/lectures/divergence`・`watch`・盤 が別々に、繰り返し呼んでいた。
      *
-     * 30 秒。**予定は秒の単位では動かない**が、IRIS 自身が書いた直後は別なので、
+     * 30 秒。これは同時期の要求をまとめるための短い再利用であり、背景観測の
+     * 一時間ごとの間隔とは別物。IRIS 自身が書いた直後は別なので、
      * 書いた側が `forget()` を呼ぶ。
      */
     private reuseMs: number = 30_000,
-    private now: () => number = () => Date.now()
+    private now: () => number = () => Date.now(),
+    /**
+     * 生きた源一つに許す、読み全体の時間。
+     *
+     * 源ごとの timeout は **一回の要求ごと** で、iCloud は発見の三往復に
+     * 暦の数だけの問い合わせを順に重ねる。遅い日には 25 秒が足し算になり、
+     * `/api/schedule?days=2` が 29.8 秒かかった（自己点検 calendar_readable、
+     * 上限 15 秒）。間に合わなかった源は失敗として控えに落とす。
+     */
+    private liveTimeoutMs: number = 10_000
   ) {}
 
   /** 日数ごとの、直前の答え。 */
@@ -398,10 +417,22 @@ export class CalendarService {
       this.liveSources
         .filter(({ source }) => source.configured())
         .map(async ({ name, source }) => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
           try {
-            return { name, reading: await source.read(days, options.from) };
+            const deadline = new Promise<never>((_, reject) => {
+              timer = setTimeout(
+                () => reject(new CalendarUnavailableError('timeout', `${name} の読み取りが ${this.liveTimeoutMs}ms を超えました。`)),
+                this.liveTimeoutMs
+              );
+            });
+            const reading = source.read(days, options.from);
+            // 負けた側の後から来る失敗は、未処理の拒否にしない。
+            reading.catch(() => {});
+            return { name, reading: await Promise.race([reading, deadline]) };
           } catch (err) {
             return { name, error: err };
+          } finally {
+            clearTimeout(timer);
           }
         })
     );

@@ -19,7 +19,7 @@ import { join } from 'path';
 import { randomUUID } from 'crypto';
 
 import { openDatabase } from '../server/services/db.js';
-import { BudgetService, BudgetExceededError, limitsFromEnv, DEFAULT_LIMITS } from '../server/core/budget_service.js';
+import { BudgetService, BudgetExceededError, limitsFromEnv, DEFAULT_LIMITS, SPEND_SINCE_SQL } from '../server/core/budget_service.js';
 
 let passed = 0;
 let failed = 0;
@@ -328,6 +328,51 @@ function main() {
     );
     fresh.close();
     rmSync(ceilDir, { recursive: true, force: true });
+  }
+
+  // -----------------------------------------------------------------------
+  section('Reading the budget touches only usage rows');
+
+  {
+    // `GET /api/budget` stalled the server for 4.9 s and 7.5 s (2026-10-17).
+    // The only index was on created_at, so each read pulled every log row of
+    // the month, of any kind, to check its event — twice, synchronously.
+    const dir9 = mkdtempSync(join(tmpdir(), 'iris-budget-index-'));
+    const db9 = openDatabase(join(dir9, 'index.db'));
+    try {
+      const plan = () =>
+        (db9.prepare(`EXPLAIN QUERY PLAN ${SPEND_SINCE_SQL}`).all('2026-08-01T00:00:00.000Z') as Array<{ detail: string }>)
+          .map((r) => r.detail)
+          .join(' | ');
+
+      check(
+        'the spend query searches by event and time',
+        /USING INDEX idx_activity_logs_event_created \(event=\? AND created_at>\?\)/.test(plan()),
+        plan()
+      );
+
+      // The reproduction: without the index, the same query falls back to
+      // the time-only index and reads every row in the window.
+      db9.exec('DROP INDEX idx_activity_logs_event_created');
+      check('without it, the query reads every row in the window', !/idx_activity_logs_event_created/.test(plan()), plan());
+      db9.exec('CREATE INDEX idx_activity_logs_event_created ON activity_logs(event, created_at)');
+
+      // Same totals as before: the index changes how rows are found, not which.
+      const b = new BudgetService(db9, { perRunUsd: 1, dailyUsd: 5, monthlyUsd: 50, warnAt: 0.8 }, () => NOW);
+      const other = db9.prepare(
+        `INSERT INTO activity_logs (id, level, event, message, detail_json, created_at)
+         VALUES (?, 'info', 'tool.call', NULL, ?, ?)`
+      );
+      for (let i = 0; i < 200; i++) other.run(randomUUID(), JSON.stringify({ usd: 99 }), new Date(NOW - i * 60_000).toISOString());
+      spend(db9, 1.25, NOW - 60_000);
+      spend(db9, 2.5, NOW - 3 * 86_400_000);
+      const state = b.state();
+      eq('other events are not counted as spend', state.windows.find((w) => w.window === 'day')!.spentUsd, 1.25);
+      eq('and the month still sums its usage rows', state.windows.find((w) => w.window === 'month')!.spentUsd, 3.75);
+    } finally {
+      db9.close();
+      rmSync(dir9, { recursive: true, force: true });
+    }
   }
 
   console.log(`\n${'─'.repeat(60)}`);

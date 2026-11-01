@@ -19,6 +19,7 @@ export interface IrisOAuthOptions {
   clientSecret?: string;
   redirectUri: string;
   scopes: string[];
+  issuer?: string;
   /**
    * Extra query parameters for the authorization request.
    *
@@ -58,6 +59,7 @@ export class IrisOAuthProvider {
   private exchangeVerifier: string | null = null;
 
   constructor(private options: IrisOAuthOptions) {}
+  private get issuer(): string { return new URL(this.options.issuer ?? 'https://accounts.google.com').href; }
 
   get redirectUrl(): string {
     return this.options.redirectUri;
@@ -79,6 +81,7 @@ export class IrisOAuthProvider {
   clientInformation() {
     return {
       client_id: this.options.clientId,
+      issuer: this.issuer,
       ...(this.options.clientSecret ? { client_secret: this.options.clientSecret } : {}),
     };
   }
@@ -101,11 +104,22 @@ export class IrisOAuthProvider {
   }
 
   tokens(): StoredTokens | undefined {
-    return this.options.store.getTokens(this.options.serverId);
+    const tokens = this.options.store.getTokens(this.options.serverId);
+    if (!tokens) return undefined;
+    const issuer = this.issuer;
+    // These legacy credentials came from the configured Google flow, never from discovery.
+    if (!tokens.issuer) {
+      const bound = { ...tokens, issuer };
+      this.options.store.bindLegacyIssuer(this.options.serverId, issuer);
+      return bound;
+    }
+    try { return new URL(tokens.issuer).href === issuer ? tokens : undefined; } catch { return undefined; }
   }
 
   saveTokens(tokens: StoredTokens): void {
-    this.options.store.saveTokens(this.options.serverId, tokens);
+    const issuer = this.issuer;
+    if (tokens.issuer && new URL(tokens.issuer).href !== issuer) throw new Error('認可元が登録済みのものと一致しません。');
+    this.options.store.saveTokens(this.options.serverId, { ...tokens, issuer });
     this.options.onEvent?.({
       type: 'oauth.tokens_saved',
       detail: {
@@ -116,6 +130,17 @@ export class IrisOAuthProvider {
         scope: tokens.scope ?? null,
       },
     });
+  }
+
+  saveDiscoveryState(state: { authorizationServerUrl: string; authorizationServerMetadata?: { issuer?: string; token_endpoint?: string } }): void {
+    if (new URL(state.authorizationServerUrl).href !== this.issuer) throw new Error('OAuth の認可元が登録済みのものと一致しません。');
+    const metadata = state.authorizationServerMetadata;
+    if (metadata?.issuer && new URL(metadata.issuer).href !== this.issuer) throw new Error('OAuth の issuer が一致しません。');
+    if (metadata?.token_endpoint) {
+      const expected = this.issuer === 'https://accounts.google.com/' ? 'https://oauth2.googleapis.com' : new URL(this.issuer).origin;
+      const endpoint = new URL(metadata.token_endpoint);
+      if (endpoint.origin !== expected || endpoint.username || endpoint.password) throw new Error('OAuth のトークン送信先が登録済みのものと一致しません。');
+    }
   }
 
   saveCodeVerifier(codeVerifier: string): void {
@@ -156,6 +181,7 @@ export class IrisOAuthProvider {
    * screen unprompted would be a worse thing to own than one that cannot.
    */
   redirectToAuthorization(authorizationUrl: URL): void {
+    if (authorizationUrl.origin !== new URL(this.issuer).origin) throw new Error('OAuth の同意画面が登録済みのものと一致しません。');
     // Applied here rather than passed through `auth()`, which has no parameter
     // for provider-specific extras.
     for (const [key, value] of Object.entries(this.options.authorizationParams ?? {})) {

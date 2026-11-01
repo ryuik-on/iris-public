@@ -189,7 +189,7 @@ async function main() {
     await expectDenied(
       'writing through a symlink to a protected file is denied',
       () => call('write_file', { path: 'link-to-env.md', content: 'x' }),
-      'denied_pattern'
+      'symlink_escape'
     );
     check(
       'the protected file was not modified through the link',

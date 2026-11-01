@@ -1274,6 +1274,168 @@ export const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    version: 33,
+    name: 'agent_waits',
+    /**
+     * 委任が断られて、**条件が整うのを待っている**タスク。
+     *
+     * 断られたタスクは「予定」のまま置き去りで、理由はどこにも残らなかった。
+     * 試し直すたびに IRIS は新しいタスクを作り、2026-09-30 には同じ依頼が
+     * 三件並んでどれも始まっていなかった。利用者いわく「待機中になってない
+     * よね」「どうなったのかがわかるような機構が弱い」。
+     *
+     * 待てば解ける理由（未コミットの変更・同時実行の上限）だけをここに置く。
+     * 解けたら自動で始め、始めたことを会話で知らせる。
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS agent_waits (
+          task_id TEXT PRIMARY KEY,
+          repo TEXT NOT NULL,
+          agent TEXT NOT NULL,
+          reason_code TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          since TEXT NOT NULL,
+          checked_at TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 1,
+          resolved_at TEXT,
+          run_id TEXT
+        );
+      `);
+    },
+  },
+  {
+    version: 34,
+    name: 'self_findings',
+    /**
+     * IRIS が自分について気づいた「直すべきこと」（`server/core/self_detect.ts`）。
+     *
+     * 「毎回こっちで直してる気がする。自己開発可能にして欲しい」（利用者、2026-10-01）。
+     * 気づく→直す→検査→承認だけ人、の輪の最初の段：**何に気づいたか、何度見たか、
+     * いまどの段にいるか**をここに残す。鍵で一度きりにするので、同じ不満や同じ
+     * エラーが何度来ても、候補は一つで、見た回数が増える。
+     *
+     * 会話や開発タスクへの外部鍵は張らない。会話を消しても、気づいたことは残る。
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS self_findings (
+          id TEXT PRIMARY KEY,
+          dedupe_key TEXT NOT NULL UNIQUE,
+          source TEXT NOT NULL,
+          title TEXT NOT NULL,
+          detail TEXT NOT NULL,
+          evidence TEXT NOT NULL,
+          status TEXT NOT NULL,
+          attempts INTEGER NOT NULL DEFAULT 0,
+          occurrences INTEGER NOT NULL DEFAULT 1,
+          first_seen TEXT NOT NULL,
+          last_seen TEXT NOT NULL,
+          task_id TEXT,
+          run_id TEXT,
+          branch TEXT,
+          verification TEXT,
+          note TEXT,
+          updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_self_findings_status ON self_findings (status, last_seen);
+      `);
+    },
+  },
+  {
+    version: 35,
+    name: 'proactive_openers_read',
+    /**
+     * 既読。IRIS からの知らせは、**返事をするか会話を消さないと減らなかった**。
+     * 「通知センターはどうやったら減るの？」（利用者、2026-10-02）。開いたら既読、
+     * 「すべて既読」でまとめて既読にする。返事待ちの印とは別に持つ：既読にしても、
+     * 会話は残り、あとで返事ができる。
+     */
+    up(db) {
+      db.exec(`ALTER TABLE proactive_openers ADD COLUMN read_at TEXT;`);
+    },
+  },
+  {
+    version: 36,
+    name: 'agent_runs_model',
+    /**
+     * 実装の実行が、実際に使ったモデル。`agent` は道具の名前（'claude-code'）で、
+     * どのモデルかは分からない。モデルごとの実績と「足りている中で安いもの」の助言
+     * （`model_advisor`）は、この名前が無いと、実装の実績を使えない（18 件が名無しだった）。
+     */
+    up(db) {
+      db.exec(`ALTER TABLE agent_runs ADD COLUMN model TEXT;`);
+    },
+  },
+  {
+    version: 37,
+    name: 'conversation_summaries',
+    /**
+     * 長い会話の、古い部分の要約（`core/history_compaction.ts`）。会話の発言そのものは
+     * 消さない。**モデルに送る形だけ**を縮め、要約は、どこまでを覆っているか（件数）と一緒に残す。
+     */
+    up(db) {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS conversation_summaries (
+          conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+          covered_count INTEGER NOT NULL,
+          summary TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+      `);
+    },
+  },
+  {
+    version: 38,
+    name: 'pending_approvals_channel',
+    /**
+     * 承認を待っている実行が、どの経路（text / voice）で始まったか。承認のあとの続きを、
+     * 始めたときと同じ経路で動かすため。持っていなかったので、声の経路（速く安いモデル）で
+     * 始めた実行が、承認のあとだけ通常の経路（Sonnet）に回っていた（1 回約 $0.05、約 20 倍）。
+     */
+    up(db) {
+      db.exec(`ALTER TABLE pending_approvals ADD COLUMN channel TEXT NOT NULL DEFAULT 'text';`);
+    },
+  },
+  {
+    version: 39,
+    name: 'activity_logs_event_index',
+    /**
+     * 予算（`core/budget_service.ts`）は `event = 'run.usage'` の行だけを、今日と今月の分
+     * 読む。索引が `created_at` にしか無かったので、**今月の記録をすべて**（種類を問わず）
+     * 表から読んで種類を確かめていた。`GET /api/budget` の中で、同期のまま、2 回。
+     * 「http GET /api/budget」でサーバーが 4.9 秒と 7.5 秒止まった（2026-10-17）。
+     */
+    up(db) {
+      db.exec(`
+        CREATE INDEX IF NOT EXISTS idx_activity_logs_event_created
+          ON activity_logs(event, created_at);
+      `);
+    },
+  },
+  {
+    version: 40,
+    name: 'conversation_context_origin',
+    up(db) {
+      db.exec(`
+        ALTER TABLE conversation_messages ADD COLUMN context_origin TEXT NOT NULL DEFAULT 'chat'
+          CHECK(context_origin IN ('chat', 'external_image'));
+        WITH previous AS (
+          SELECT id, role,
+            lag(role) OVER (PARTITION BY conversation_id ORDER BY created_at, rowid) AS previous_role,
+            lag(content) OVER (PARTITION BY conversation_id ORDER BY created_at, rowid) AS previous_content
+          FROM conversation_messages
+        )
+        UPDATE conversation_messages SET context_origin = 'external_image'
+          WHERE id IN (SELECT id FROM previous WHERE role = 'assistant' AND previous_role = 'user'
+            AND previous_content LIKE '%（画像を添付しました）');
+        DELETE FROM conversation_summaries WHERE conversation_id IN (
+          SELECT conversation_id FROM conversation_messages WHERE context_origin = 'external_image'
+        );
+      `);
+    },
+  },
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

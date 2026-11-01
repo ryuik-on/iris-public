@@ -66,8 +66,16 @@ async function main() {
     eq('the estimate carries its verification date', opus.pricingLastVerified, PRICING_LAST_VERIFIED);
 
     const sonnet = estimateCost('claude-sonnet-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
-    eq('sonnet-5 prices 1M+1M at $18', sonnet.usd, 18);
+    eq('sonnet-5 prices 1M+1M at $12', sonnet.usd, 12);
     check('sonnet is cheaper than opus for identical usage', sonnet.usd < opus.usd);
+
+    // The model Claude Code actually runs on. Absent from the table it priced at
+    // nothing, and the unmeterable guard stopped the run at three minutes.
+    const opus55 = estimateCost('claude-opus-5-5', { inputTokens: 1_000_000, outputTokens: 1_000_000, cacheReadTokens: 1_000_000 });
+    check('opus-5-5 is priced', opus55.priced);
+    eq('opus-5-5 prices 1M+1M+1M cache read at $24.20', opus55.usd, 24.2);
+    check('sonnet-5-5 is priced', estimateCost('claude-sonnet-5-5', { inputTokens: 1, outputTokens: 1 }).priced);
+    check('fable-5-1 is priced', estimateCost('claude-fable-5-1', { inputTokens: 1, outputTokens: 1 }).priced);
 
     const haiku = estimateCost('claude-haiku-4-5', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
     check('haiku is cheaper still', haiku.usd < sonnet.usd);
@@ -76,7 +84,7 @@ async function main() {
     const sol = estimateCost('gpt-5.6-sol', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
     const terra = estimateCost('gpt-5.6-terra', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
     const luna = estimateCost('gpt-5.6-luna', { inputTokens: 1_000_000, outputTokens: 1_000_000 });
-    eq('sol prices 1M+1M at $35', sol.usd, 35);
+    eq('sol prices 1M+1M at $24 (pricing page 2026-10-02: $4 in, $20 out)', sol.usd, 24);
     eq('terra prices 1M+1M at $14', terra.usd, 14);
     eq('luna prices 1M+1M at $1.4', luna.usd, 1.4);
     check('the tiers are ordered sol > terra > luna', sol.usd > terra.usd && terra.usd > luna.usd);

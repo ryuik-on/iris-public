@@ -24,6 +24,7 @@ import { ToolRegistry, isAutoRetryable } from '../server/tools/registry.js';
 import { RiskLevel, Tool, ConversationTurn } from '../server/core/types.js';
 import { AIProvider, AIProviderResponse } from '../server/providers/base.js';
 import { JarvisOrchestrator, OrchestratorEvent } from '../server/core/orchestrator.js';
+import { ProviderRouter } from '../server/core/provider_router.js';
 import { SqliteApprovalStore } from '../server/services/approval_sqlite.js';
 import { openDatabase } from '../server/services/db.js';
 import { CONFIG } from '../server/config.js';
@@ -73,6 +74,13 @@ async function main() {
   const dir = mkdtempSync(join(tmpdir(), 'iris-resilience-'));
 
   try {
+    const configuredRunDeadline = parseInt(process.env.IRIS_RUN_DEADLINE_MS || '', 10);
+    eq(
+      'the run deadline defaults to 30 minutes while keeping a positive environment override',
+      CONFIG.runDeadlineMs,
+      Number.isFinite(configuredRunDeadline) && configuredRunDeadline > 0 ? configuredRunDeadline : 1_800_000
+    );
+
     // ---------------------------------------------------------------------
     section('withTimeout');
 
@@ -92,6 +100,21 @@ async function main() {
       await withTimeout(() => sleep(5000), { ms: 60, label: 'pure', sideEffectUnknown: false });
     } catch (err: any) {
       eq('an explicitly pure call is not side-effect-unknown', err.sideEffectUnknown, false);
+    }
+
+    // 進みがあるあいだは、時間切れにしない。最後の進みから ms たったら、時間切れにする。
+    const progressing = { lastAt: Date.now() };
+    const stream = await withTimeout(async () => {
+      for (let i = 0; i < 6; i++) { await sleep(30); progressing.lastAt = Date.now(); }
+      return 'streamed';
+    }, { ms: 80, label: 'streaming', progress: progressing });
+    eq('a call that keeps making progress is not cut off', stream, 'streamed');
+    const silent = { lastAt: Date.now() };
+    try {
+      await withTimeout(() => sleep(2000), { ms: 80, label: 'silent', progress: silent });
+      check('a call that goes silent times out', false, 'no throw');
+    } catch (err: any) {
+      check('a call that goes silent times out', err instanceof TimeoutError);
     }
 
     let observedAbort = false;
@@ -347,6 +370,40 @@ async function main() {
     }
     const elapsed = Date.now() - startedAt;
     check(`it gave up promptly (${elapsed}ms, bounded)`, elapsed < 5000, `${elapsed}ms`);
+
+    // The router must not buffer healthy deltas. It resets the stream only
+    // after its timed-out candidate has been cancelled and before its
+    // successor can emit text.
+    const slow: AIProvider = {
+      id: 'slow', name: 'Slow', vendor: 'test', currentModel: 'slow-v1', setModel() {},
+      async generateResponse(_m, _t, _s, signal, onDelta) {
+        onDelta?.('old');
+        return new Promise<AIProviderResponse>((_, reject) => signal?.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+      },
+    };
+    const replacement: AIProvider = {
+      id: 'replacement', name: 'Replacement', vendor: 'test', currentModel: 'replacement-v1', setModel() {},
+      async generateResponse(_m, _t, _s, _signal, onDelta) {
+        onDelta?.('new');
+        return { content: 'new' };
+      },
+    };
+    const routed = new ProviderRouter(
+      [{ key: 'slow', provider: slow }, { key: 'replacement', provider: replacement }],
+      { attemptTimeoutMs: 25 }
+    );
+    const streamed: string[] = [];
+    const routedOrchestrator = new JarvisOrchestrator(routed, new ToolRegistry(), approvals, 6);
+    const routedResult = await routedOrchestrator.process({
+      userMessage: 'hello', history: [],
+      stream: {
+        delta: (text) => streamed.push(text),
+        reset: () => streamed.splice(0, streamed.length),
+        phase: () => {},
+      },
+    });
+    eq('the orchestrator passes reset to a failover router', streamed, ['new']);
+    eq('the replacement answer completes the same run', routedResult.reply, 'new');
 
     (CONFIG as any).providerTimeoutMs = originalProviderTimeout;
     (CONFIG as any).providerAttempts = 3;

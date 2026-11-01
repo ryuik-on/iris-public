@@ -79,7 +79,7 @@ let lastStartedAt = 0;
  * given this on the day it was written; this one was not, and it cost an hour
  * to notice.
  */
-let lastOutcome: { at: string; result: string } | null = null;
+let lastOutcome: { at: string; result: string; loginNeeded?: boolean } | null = null;
 
 export function allowanceRefreshState() {
   return { running: running !== null && running.exitCode === null, last: lastOutcome };
@@ -270,11 +270,17 @@ export function refreshAllowance(
     const expired = now() - began > 120_000;
     if (moved || expired) {
       clearInterval(poll);
+      // 画面に「Not logged in」と出ていたら、上限が書かれないのは、ログインが切れているから。
+      // 「Pro / Max のみ提供」という、別の理由に見せない（2026-10-17、10/9 から読めなかった本当の原因）。
+      const loginNeeded = !moved && /Not\s*logged\s*in|Run\s*\/login/i.test(output.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, ''));
       lastOutcome = {
         at: new Date(now()).toISOString(),
         result: moved
           ? '取得できました。'
-          : '起動はしたが、上限が書かれないまま2分で打ち切りました。 末尾: ' + tail(output),
+          : loginNeeded
+            ? 'Claude Code にログインしていないため、上限を読めません。'
+            : '起動はしたが、上限が書かれないまま2分で打ち切りました。 末尾: ' + tail(output),
+        ...(loginNeeded ? { loginNeeded: true } : {}),
       };
       stop();
     }

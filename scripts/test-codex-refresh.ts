@@ -39,8 +39,10 @@ function main() {
 
   section('実際に起動するか');
   let launched: string[] | null = null;
+  let finishFake = () => {};
   const fake = () => {
     const handlers: Record<string, () => void> = {};
+    finishFake = () => handlers.exit?.();
     return { on: (e: string, f: () => void) => { handlers[e] = f; }, kill: () => {} } as any;
   };
   const live = refreshCodexAllowance(limit(Date.now() + hour), (c, a) => { launched = a; return fake(); });
@@ -55,6 +57,7 @@ function main() {
   section('二重に走らせない');
   const again = refreshCodexAllowance(limit(Date.now() - hour), () => fake());
   eq('走っているあいだは断る', again.started, false);
+  finishFake();
 
   section('立て続けには走らせない');
   /*

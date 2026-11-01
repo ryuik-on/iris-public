@@ -89,8 +89,8 @@ function freeMinutes(day: ScheduleReading['free'][number]): number {
 
 type Held = { at: number; reading: ScheduleReading };
 
-export function WeekCalendar({ onClose }: { onClose: () => void }) {
-  const [monday, setMonday] = React.useState(() => mondayOf(new Date()));
+export function WeekCalendar({ onClose, start }: { onClose: () => void; start?: Date }) {
+  const [monday, setMonday] = React.useState(() => mondayOf(start ?? new Date()));
   const [now, setNow] = React.useState(() => new Date());
   const [selected, setSelected] = React.useState<{ event: ScheduleEvent; date: string } | null>(null);
   const [failures, setFailures] = React.useState<Record<string, string>>({});

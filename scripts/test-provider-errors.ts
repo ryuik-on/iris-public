@@ -92,6 +92,17 @@ async function main() {
   );
 
   // A genuine credit problem must still be identified.
+  const openaiNoCredit: any = new Error('429 You have no credits remaining. Add credits to continue using the API at https://platform.openai.com/settings/organization/billing/.');
+  openaiNoCredit.status = 429;
+  const oc = classifyProviderError(openaiNoCredit);
+  eq('OpenAI out-of-credit (HTTP 429) is a credit problem, not a rate limit that heals', [oc.kind, oc.retryable], ['insufficient_credit', false]);
+  const openaiQuotaBody: any = new Error('429');
+  openaiQuotaBody.status = 429;
+  openaiQuotaBody.error = { code: 'insufficient_quota', message: 'You exceeded your current quota, please check your plan and billing details.' };
+  eq('the insufficient_quota code is the same', classifyProviderError(openaiQuotaBody).kind, 'insufficient_credit');
+  const plain429: any = new Error('429 Too Many Requests');
+  plain429.status = 429;
+  eq('an ordinary 429 is still a short rate limit', classifyProviderError(plain429).kind, 'rate_limit');
   const realCredit = classifyProviderError(new Error('Your credit balance is too low to access the API'));
   eq('a genuine credit failure is still caught', realCredit.kind, 'insufficient_credit');
 

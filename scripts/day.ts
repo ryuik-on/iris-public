@@ -1,3 +1,4 @@
+import { localApiFetch } from '../server/core/owner_access.js';
 /**
  * 今日を一枚、端末に。
  *
@@ -33,7 +34,7 @@ async function main() {
   const days = Math.max(1, Math.min(7, Number(process.argv[2]) || 1));
   let reading: any;
   try {
-    const res = await fetch(`${BASE}/api/schedule?days=${days}`, { signal: AbortSignal.timeout(60_000) });
+    const res = await localApiFetch(`${BASE}/api/schedule?days=${days}`, { signal: AbortSignal.timeout(60_000) });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     reading = await res.json();
   } catch (err: any) {

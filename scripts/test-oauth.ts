@@ -212,7 +212,7 @@ function main() {
         eq('without disturbing the scope', issued.searchParams.get('scope'), 's');
 
         // A provider with no extras must not acquire any.
-        const plain = new URL('https://example.com/auth?scope=s');
+        const plain = new URL('https://accounts.google.com/auth?scope=s');
         provider.redirectToAuthorization(plain);
         const plainUrl = provider.takeAuthorizationUrl()!;
         check('no parameters are added when none are configured', !plainUrl.searchParams.has('access_type'));

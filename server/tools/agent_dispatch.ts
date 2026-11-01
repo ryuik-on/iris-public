@@ -37,6 +37,21 @@ export interface DispatchRefusal {
   refused: true;
   code: string;
   message: string;
+  /** 作ったタスクがあれば。置き去りにしないため、呼び直しで渡せるように返す。 */
+  taskId?: string;
+}
+
+/**
+ * 断られたが、**待てば解ける**。タスクは待機中になり、解けたら IRIS が自分で
+ * 始めて、始めたことを会話で知らせる。呼び直す必要はない。
+ */
+export interface DispatchWaiting {
+  waiting: true;
+  taskId: string;
+  code: string;
+  reason: string;
+  agent: string;
+  repo: string;
 }
 
 export function createAgentDispatchTools(deps: {
@@ -50,7 +65,8 @@ export function createAgentDispatchTools(deps: {
     /** Omitted means the allowance decides. */
     agent?: AgentKind;
     needsNetwork?: boolean;
-  }) => Promise<DispatchOutcome | DispatchRefusal>;
+    taskId?: string | null;
+  }) => Promise<DispatchOutcome | DispatchRefusal | DispatchWaiting>;
   listRuns: () => Array<Record<string, unknown>>;
   /** The repositories a dispatch may target, for the description and errors. */
   allowedRepos: () => string[];
@@ -92,6 +108,12 @@ export function createAgentDispatchTools(deps: {
           repo: {
             type: 'string',
             description: '対象リポジトリの絶対パス。省略時は既定のリポジトリ。',
+          },
+          taskId: {
+            type: 'string',
+            description:
+              '既にあるタスクを始めるときの ID。前に断られたときの答えに入っている。' +
+              '渡さないと新しいタスクが作られ、同じ依頼が重複する。',
           },
           needsNetwork: {
             type: 'boolean',
@@ -160,13 +182,27 @@ export function createAgentDispatchTools(deps: {
           repo: typeof args.repo === 'string' && args.repo.trim() ? args.repo.trim() : null,
           agent,
           needsNetwork: args.needsNetwork === true,
+          taskId: typeof args.taskId === 'string' && args.taskId.trim() ? args.taskId.trim() : null,
         });
+
+        if ('waiting' in result) {
+          return {
+            waiting: true,
+            taskId: result.taskId,
+            reason: result.reason,
+            note:
+              `いまは始められません（${result.reason}）。タスクは待機中にしました。` +
+              '条件が整えば IRIS が自動で始め、始めたことを会話で知らせます。' +
+              '呼び直す必要はありません。利用者には、何を待っているかをそのまま伝えてください。',
+          };
+        }
 
         if ('refused' in result) {
           return {
             error: true,
             code: result.code,
             message: result.message,
+            ...(result.taskId ? { taskId: result.taskId, note: '呼び直すときはこの taskId を渡してください。' } : {}),
             allowedRepos: deps.allowedRepos(),
           };
         }

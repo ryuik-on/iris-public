@@ -9,6 +9,7 @@ export class GeminiProvider implements AIProvider {
   name = 'Google Gemini';
   currentModel: string;
   private ai: GoogleGenAI;
+  private maxTokens = Math.max(256, Math.min(16000, Number(process.env.GEMINI_MAX_TOKENS) || 16000));
 
   /**
    * Reports tools that could not be sent, and what was stripped from the rest.
@@ -32,6 +33,39 @@ export class GeminiProvider implements AIProvider {
     this.ai = new GoogleGenAI({ apiKey: key });
     this.currentModel = model;
     this.onEvent = onEvent;
+  }
+
+  /**
+   * 画像を見て答える、道具を持たない一回きりの問い合わせ（`AnthropicProvider.describeImage` と同じ形）。
+   * Anthropic の残高が切れたときの代わり（無料枠で足りる）。思考は付けない。
+   */
+  async describeImage(
+    input: { system: string; question: string; imageBase64: string; mime: string; history?: Array<{ q: string; a: string }> },
+    signal?: AbortSignal
+  ): Promise<{ content: string; usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number } }> {
+    const earlier = (input.history ?? []).flatMap((h) => [
+      { role: 'user', parts: [{ text: h.q }] },
+      { role: 'model', parts: [{ text: h.a }] },
+    ]);
+    const response: any = await this.ai.models.generateContent({
+      model: this.currentModel,
+      contents: [
+        ...earlier,
+        { role: 'user', parts: [{ inlineData: { mimeType: input.mime, data: input.imageBase64 } }, { text: input.question }] },
+      ],
+      config: { systemInstruction: input.system, maxOutputTokens: 1500, abortSignal: signal },
+    } as any);
+    const text = String(response?.text ?? '').trim();
+    const u = response?.usageMetadata ?? {};
+    return {
+      content: text,
+      usage: {
+        inputTokens: u.promptTokenCount ?? 0,
+        outputTokens: (u.candidatesTokenCount ?? 0) + (u.thoughtsTokenCount ?? 0),
+        cacheReadTokens: u.cachedContentTokenCount ?? 0,
+        cacheCreationTokens: 0,
+      },
+    };
   }
 
   setModel(modelName: string) { this.currentModel = modelName; }
@@ -184,6 +218,7 @@ export class GeminiProvider implements AIProvider {
         // The SDK honours this, so a timeout cancels the HTTP request rather
         // than leaving it running and billable in the background.
         abortSignal: signal,
+        maxOutputTokens: this.maxTokens,
       },
     };
 

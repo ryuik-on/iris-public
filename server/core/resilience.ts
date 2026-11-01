@@ -50,6 +50,14 @@ export interface WithTimeoutOptions {
   sideEffectUnknown?: boolean;
   /** Caller-supplied signal (e.g. a run deadline) combined with the timeout. */
   signal?: AbortSignal;
+  /**
+   * 進みがあるあいだは、時間切れにしない。
+   *
+   * `lastAt` を呼び出し側が更新する（返事の断片が届くたびなど）。**最後の進みから `ms` たっても
+   * 何も無いとき**だけ、時間切れにする。長い返事を最後まで書いている候補を、途中で切らず、
+   * 黙ったまま止まった候補だけを、早く諦めるため。
+   */
+  progress?: { lastAt: number };
 }
 
 /**
@@ -70,10 +78,16 @@ export async function withTimeout<T>(
   }
 
   let timedOut = false;
-  const timer = setTimeout(() => {
+  let timer: ReturnType<typeof setTimeout>;
+  const arm = (delay: number): ReturnType<typeof setTimeout> => setTimeout(() => {
+    if (options.progress) {
+      const idle = Date.now() - options.progress.lastAt;
+      if (idle < ms) { timer = arm(ms - idle); return; }
+    }
     timedOut = true;
     controller.abort();
-  }, ms);
+  }, delay);
+  timer = arm(ms);
 
   try {
     return await Promise.race([

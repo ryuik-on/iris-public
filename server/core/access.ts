@@ -1,26 +1,6 @@
-/**
- * Who may talk to IRIS over the network.
- *
- * The server has always listened on every interface — that is what makes a
- * phone on the same Wi-Fi able to reach it, and it is also what put the whole
- * assistant in front of everyone else on that network: the calendar, the
- * memories, every conversation, and an approval dialog they could press
- * themselves. On a home network that is a shrug. On a café or campus network
- * it is the whole machine.
- *
- * The rule is one sentence: a request from the machine itself is trusted, and
- * a request from anywhere else has to carry the token.
- *
- * Loopback is trusted because reaching it already requires being on the
- * computer, which is a stronger check than any password this could ask for.
- * That also means nothing about using IRIS on the Mac changes — the browser
- * there, the speech helper, the scripts, all of them keep working exactly as
- * they did, which is the only reason this can be turned on without a
- * migration.
- *
- * With no token configured, remote requests are refused rather than allowed.
- * A protection that disables itself when its configuration is missing is worse
- * than none, because it looks like protection. The refusal says what to do.
+/** Every API caller must present a credential, including loopback callers.
+ * The HUD lends the browser a one-use launch ticket; native clients read the
+ * owner-only instance credential. No credential means no API access.
  */
 
 export type AccessVerdict =
@@ -62,7 +42,6 @@ export function decideAccess(input: {
   presented: string | null;
   expected: string | null;
 }): AccessVerdict {
-  if (isLoopback(input.remoteAddress)) return { allow: true, reason: null };
 
   if (!input.expected) {
     return {
@@ -123,7 +102,8 @@ export function presentedToken(headers: Record<string, any>): string | null {
     for (const part of cookie.split(';')) {
       const [name, ...rest] = part.trim().split('=');
       if (name === COOKIE_NAME) {
-        const value = decodeURIComponent(rest.join('=')).trim();
+        let value: string;
+        try { value = decodeURIComponent(rest.join('=')).trim(); } catch { return null; }
         if (value.length > 0) return value;
       }
     }

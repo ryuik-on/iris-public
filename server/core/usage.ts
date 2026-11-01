@@ -75,22 +75,37 @@ export interface ModelPrice {
  * every estimate reports that date. Treat an estimate older than a few weeks
  * as indicative, and re-verify against the provider's pricing page (§47).
  */
-export const PRICING_LAST_VERIFIED = '2026-08-20';
+export const PRICING_LAST_VERIFIED = '2026-10-09';
 
 export const MODEL_PRICES: Record<string, ModelPrice> = {
   // Anthropic
+  // Opus 5.5 reads its cache at 0.05x, not the usual 0.1x. It was missing from
+  // this table, so a Claude Code run on it could not be priced and the unmeterable
+  // guard stopped it at three minutes (2026-09-30, runs b24c2e18 and 790fa401).
+  'claude-opus-5-5': { inputPerMillion: 4, outputPerMillion: 20, cacheReadPerMillion: 0.2 },
   'claude-opus-5': { inputPerMillion: 5, outputPerMillion: 25, cacheReadPerMillion: 0.5 },
   'claude-opus-4-8': { inputPerMillion: 5, outputPerMillion: 25, cacheReadPerMillion: 0.5 },
-  'claude-sonnet-5': { inputPerMillion: 3, outputPerMillion: 15, cacheReadPerMillion: 0.3 },
+  // Sonnet 5.5 reads its cache at 0.05x like Opus 5.5 (pricing page, 2026-10-09).
+  'claude-sonnet-5-5': { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.1 },
+  // The introductory 2/10 became the standard price; the 3/15 step announced for
+  // 2026-09-01 was cancelled.
+  'claude-sonnet-5': { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.2 },
   'claude-sonnet-4-6': { inputPerMillion: 3, outputPerMillion: 15, cacheReadPerMillion: 0.3 },
+  // Haiku 5.5 is tiered by prompt length: these are the rates up to 100k tokens;
+  // a prompt over 100k pays 0.5 / 2.5 (cache read 0.05), which this table does not
+  // model, so such a call is under-reported by up to 5x.
+  'claude-haiku-5-5': { inputPerMillion: 0.1, outputPerMillion: 0.5, cacheReadPerMillion: 0.01 },
   'claude-haiku-4-5': { inputPerMillion: 1, outputPerMillion: 5, cacheReadPerMillion: 0.1 },
-  'claude-fable-5': { inputPerMillion: 10, outputPerMillion: 50 },
+  'claude-fable-5-1': { inputPerMillion: 10, outputPerMillion: 50, cacheReadPerMillion: 0.25 },
+  'claude-fable-5': { inputPerMillion: 10, outputPerMillion: 50, cacheReadPerMillion: 1 },
 
   // OpenAI. Sol / Terra / Luna are capability tiers within one generation, not
   // separate models — flagship, balanced, and cost-optimised. Terra and Luna
   // were cut on 2026-07-30 (Terra 2.50 -> 2.00, Luna 1.00 -> 0.20); these are
   // the post-cut rates, which is exactly why the table carries a date.
-  'gpt-5.6-sol': { inputPerMillion: 5, outputPerMillion: 30, cacheReadPerMillion: 0.5 },
+  'gpt-6.1-sol': { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.1 },
+  'gpt-6-sol': { inputPerMillion: 2, outputPerMillion: 10, cacheReadPerMillion: 0.2 },
+  'gpt-5.6-sol': { inputPerMillion: 4, outputPerMillion: 20, cacheReadPerMillion: 0.4 },
   'gpt-5.6-terra': { inputPerMillion: 2, outputPerMillion: 12, cacheReadPerMillion: 0.2 },
   'gpt-5.6-luna': { inputPerMillion: 0.2, outputPerMillion: 1.2, cacheReadPerMillion: 0.02 },
 

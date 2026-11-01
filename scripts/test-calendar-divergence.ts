@@ -27,8 +27,8 @@ section('クラウドにあって Mac に無い');
    * まだ取り込んでいない状態。**利用者の言う症状そのもの。**
    */
   const d = findDivergence([
-    src('eventkit', [ev('ガウス', '2026-09-08T15:00')]),
-    src('icloud', [ev('ガウス', '2026-09-08T15:00'), ev('歯医者', '2026-09-09T10:00', '自宅')]),
+    src('eventkit', [ev('コスモ', '2026-09-08T15:00')]),
+    src('icloud', [ev('コスモ', '2026-09-08T15:00'), ev('歯医者', '2026-09-09T10:00', '自宅')]),
   ]);
   check('比べられた', d.compared);
   check('一件見つける', d.missingOnMac.length === 1, d.missingOnMac);
@@ -96,15 +96,15 @@ section('突き合わせの鍵');
 {
   // 題名と開始時刻。三つの源に共通する識別子が無いので、これしかない。
   const same = findDivergence([
-    src('eventkit', [ev(' ガウス ', '2026-09-08T15:00:00')]),
-    src('icloud', [ev('ガウス', '2026-09-08T15:00')]),
+    src('eventkit', [ev(' コスモ ', '2026-09-08T15:00:00')]),
+    src('icloud', [ev('コスモ', '2026-09-08T15:00')]),
   ]);
   check('前後の空白と秒は無視', same.missingOnMac.length === 0 && same.missingInCloud.length === 0, same);
 
-  // 同じ題名でも時刻が違えば別の予定。「ガウス」は週に何度も来る。
+  // 同じ題名でも時刻が違えば別の予定。「コスモ」は週に何度も来る。
   const twice = findDivergence([
-    src('eventkit', [ev('ガウス', '2026-09-08T15:00')]),
-    src('icloud', [ev('ガウス', '2026-09-08T15:00'), ev('ガウス', '2026-09-10T15:00')]),
+    src('eventkit', [ev('コスモ', '2026-09-08T15:00')]),
+    src('icloud', [ev('コスモ', '2026-09-08T15:00'), ev('コスモ', '2026-09-10T15:00')]),
   ]);
   check('時刻が違えば別の予定', twice.missingOnMac.length === 1, twice.missingOnMac);
 }

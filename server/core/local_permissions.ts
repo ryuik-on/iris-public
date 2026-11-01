@@ -1,4 +1,22 @@
-import { chmodSync, mkdirSync, statSync, existsSync } from 'fs';
+import { chmodSync, mkdirSync, statSync, existsSync, lstatSync, readdirSync } from 'fs';
+import path from 'node:path';
+
+export function closePrivateTree(root: string, privateParent = false): void {
+  if (!existsSync(root)) { mkdirSync(root, { recursive: true, mode: 0o700 }); return; }
+  const info = lstatSync(root);
+  if (info.isSymbolicLink()) throw new Error('非公開の保存先にはリンクを使えません。');
+  const desired = info.isDirectory() ? 0o700 : 0o600;
+  try { chmodSync(root, desired); }
+  catch (err) {
+    // Immutable user files may reject chmod. A verified private ancestor
+    // already blocks other accounts; preserve the user's immutable flag.
+    if (!privateParent && (info.mode & 0o777) !== desired) throw err;
+  }
+  if (info.isDirectory()) for (const entry of readdirSync(root)) {
+    const child = path.join(root, entry);
+    if (!lstatSync(child).isSymbolicLink()) closePrivateTree(child, true);
+  }
+}
 
 /**
  * Who else on this machine can read what IRIS keeps.

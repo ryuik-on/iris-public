@@ -101,8 +101,13 @@ export function limitsFromEnv(env: NodeJS.ProcessEnv = process.env): BudgetLimit
   };
 }
 
+/** Read on every `GET /api/budget`, synchronously; must stay on an index. */
+export const SPEND_SINCE_SQL = `SELECT detail_json FROM activity_logs
+          WHERE event = 'run.usage' AND created_at >= ?`;
+
 export class BudgetService {
   private limits: BudgetLimits;
+  private reservations = new Map<symbol, number>();
 
   constructor(
     private db: Database.Database,
@@ -133,12 +138,7 @@ export class BudgetService {
 
   /** Spend inside a window, read from the usage log rather than a counter. */
   spentSince(sinceIso: string): { usd: number; unpriced: number } {
-    const rows = this.db
-      .prepare(
-        `SELECT detail_json FROM activity_logs
-          WHERE event = 'run.usage' AND created_at >= ?`
-      )
-      .all(sinceIso) as any[];
+    const rows = this.db.prepare(SPEND_SINCE_SQL).all(sinceIso) as any[];
 
     let usd = 0;
     let unpriced = 0;
@@ -177,11 +177,12 @@ export class BudgetService {
   state(pendingUsd = 0): BudgetState {
     const day = this.spentSince(this.startOfDay());
     const month = this.spentSince(this.startOfMonth());
+    const reserved = [...this.reservations.values()].reduce((sum, usd) => sum + usd, 0);
 
     const windows: BudgetWindow[] = [
       this.window('run', pendingUsd, this.limits.perRunUsd),
-      this.window('day', day.usd + pendingUsd, this.limits.dailyUsd),
-      this.window('month', month.usd + pendingUsd, this.limits.monthlyUsd),
+      this.window('day', day.usd + pendingUsd + reserved, this.limits.dailyUsd),
+      this.window('month', month.usd + pendingUsd + reserved, this.limits.monthlyUsd),
     ];
 
     const denied = windows.find((w) => w.verdict === 'deny');
@@ -250,6 +251,16 @@ export class BudgetService {
     const state = this.checkBeforeCall(model, estimatedUsage);
     if (state.verdict === 'deny') throw new BudgetExceededError(state);
     return state;
+  }
+
+  /** Synchronous reservation: concurrent auxiliary calls cannot reuse one allowance. */
+  reserveCall(model: string, estimatedUsage: TokenUsage, free = false): () => void {
+    if (this.reservations.size >= 2) throw new Error('画像や翻訳の問い合わせを処理中です。返答を待ってもう一度試してください。');
+    const cost = estimateCost(model, estimatedUsage);
+    if (!free && !cost.priced) throw new Error('このモデルは費用の上限を見積もれないため、呼び出しません。');
+    if (!free) this.assertCanSpend(model, estimatedUsage);
+    const id = Symbol(); this.reservations.set(id, free ? 0 : cost.usd);
+    return () => { this.reservations.delete(id); };
   }
 
   /**

@@ -16,6 +16,8 @@ export interface PendingApprovalRecord {
    * interrupted it.
    */
   origin: 'user' | 'inferred';
+  /** 始めた経路。承認のあとの続きも、同じ経路で動かす。 */
+  channel: 'text' | 'voice';
   status: 'pending' | 'approved' | 'rejected';
   createdAt: string;
   resolvedAt: string | null;
@@ -31,6 +33,7 @@ export interface SavePendingInput {
   riskLevel: RiskLevel;
   historyJson: string;
   origin?: 'user' | 'inferred';
+  channel?: 'text' | 'voice';
 }
 
 /**
@@ -49,8 +52,8 @@ export class SqliteApprovalStore {
       .prepare(
         `INSERT INTO pending_approvals
            (approval_id, session_id, conversation_id, tool_call_id, tool_name,
-            args_json, risk_level, history_json, origin, status, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
+            args_json, risk_level, history_json, origin, channel, status, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)`
       )
       .run(
         record.approvalId,
@@ -62,6 +65,7 @@ export class SqliteApprovalStore {
         record.riskLevel,
         record.historyJson,
         record.origin ?? 'user',
+        record.channel === 'voice' ? 'voice' : 'text',
         now
       );
   }
@@ -172,6 +176,7 @@ function mapRow(row: any): PendingApprovalRecord {
     historyJson: row.history_json,
     // Older rows predate the column entirely; they were all typed by a person.
     origin: row.origin === 'inferred' ? 'inferred' : 'user',
+    channel: row.channel === 'voice' ? 'voice' : 'text',
     status: row.status,
     createdAt: row.created_at,
     resolvedAt: row.resolved_at ?? null,

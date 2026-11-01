@@ -27,12 +27,41 @@ export interface ConversationView {
 /**
  * The token this device is using, if it needs one.
  *
- * A browser on the machine itself never needs it — the server trusts loopback
- * — so this stays empty there and no part of the interface mentions it. It
- * only appears on a phone or another computer, which is exactly where a
- * credential is worth asking for.
+ * HUD launches redeem a one-use ticket for an HttpOnly cookie. An explicit
+ * token is kept only when the owner uses the manual sign-in path.
  */
 const TOKEN_KEY = 'iris.access-token';
+let launchAuthentication: Promise<void> | null = null;
+
+function authenticateLaunch(): Promise<void> {
+  const hash = new URLSearchParams(window.location.hash.slice(1));
+  const ticket = hash.get('iris-launch');
+  if (ticket) {
+    // Remove the one-use ticket before subrequests or outgoing navigation.
+    window.history.replaceState(null, '', (window.location.pathname === '/_iris/open' ? '/' : window.location.pathname) + window.location.search);
+    forgetToken();
+    launchAuthentication = fetch('/api/access/launch/redeem', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticket }), credentials: 'same-origin', redirect: 'error',
+    }).then((res) => { if (!res.ok) throw new Error('HUD からもう一度 IRIS を開いてください。'); });
+  }
+  return launchAuthentication ?? Promise.resolve();
+}
+
+async function authenticatedFetch(input: string, init?: RequestInit): Promise<Response> {
+  await authenticateLaunch();
+  const headers = new Headers(init?.headers);
+  headers.delete('Authorization');
+  const token = storedToken();
+  if (token) headers.set('Authorization', `Bearer ${token}`);
+  return fetch(input, { ...init, headers, credentials: 'same-origin', redirect: 'error' });
+}
+
+window.addEventListener('hashchange', (event) => {
+  if (new URL(event.newURL).hash.includes('iris-launch=')) {
+    void authenticateLaunch().then(() => window.location.reload()).catch(() => {});
+  }
+});
 
 export function storedToken(): string | null {
   try {
@@ -66,7 +95,7 @@ function authHeaders(): Record<string, string> {
 }
 
 async function request<T>(input: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, {
+  const res = await authenticatedFetch(input, {
     ...init,
     headers: { ...(init?.headers as Record<string, string> | undefined), ...authHeaders() },
   });
@@ -130,7 +159,7 @@ export async function streamChatMessage(
 ): Promise<any> {
   let response: Response;
   try {
-    response = await fetch('/api/chat/stream', {
+    response = await authenticatedFetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ message, conversationId, channel }),
@@ -237,6 +266,129 @@ export interface OpenerView {
   title: string | null;
   replied: boolean;
   text: string | null;
+}
+
+/** 盤が預けた「開いてほしい会話」を受け取る。読んだら消える。 */
+export function takeRequestedConversation() {
+  return request<{ conversationId: string | null; view?: string | null }>('/api/ui/open');
+}
+
+export interface ProviderStatus {
+  key: string; model: string; available: boolean;
+  reason: string | null; message: string | null; retryAt: string | null;
+  servedCount: number; spentTodayUsd: number; capUsd: number | null;
+}
+
+export interface StalledDev { id: string; title: string; status: string; reason: string; since: string | null; agent: string; repo: string | null }
+
+export function abandonDevTask(id: string) {
+  return request<{ task: unknown }>(`/api/dev/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'abandoned' }),
+  });
+}
+
+/** 実際にコード書きを始める口（/api/agent/start）。`/api/dev/tasks/:id/runs` は記録を作るだけで、実行は始めない。 */
+export function restartDevTask(id: string, agent: string, repo: string) {
+  return request<{ runId?: string; refused?: boolean; message?: string }>('/api/agent/start', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskId: id, repo, agent, role: 'implement' }),
+  });
+}
+
+export interface CenterSnapshot {
+  providers?: ProviderStatus[];
+  stalledDev?: StalledDev[];
+  generatedAt: string;
+  counts: { unreadNotices: number; approvals: number; runningRuns: number; problems: number };
+  today: {
+    brief: { title: string; text: string } | null;
+    proposals: Array<{ id: string; text: string; detail?: string; taskId?: string; ask?: { status: string | null; progress: number | null }; to?: 'notices' | 'approvals' | 'development' | 'system' }>;
+    summary: any | null;
+    couldNotRead: string[];
+  };
+  notices: Array<{ conversationId: string; ruleId: string; title: string; preview: string; createdAt: string; replied: boolean; read?: boolean }>;
+  runs: Array<{
+    id: string; agent: string; state: string; stopReason: string | null; usd: number | null; branch: string | null;
+    startedAt: string; endedAt: string | null; taskId: string | null; taskTitle: string | null;
+  }>;
+  approvals: Array<{ id: string; toolName: string; conversationId: string; conversationTitle?: string }>;
+  system: { status: string; activeProvider: string | null; problems: any[]; stallsLastHour: any; usage: any } | null;
+  activity: Array<{ at: string; level: string; event: string; message: string | null }>;
+  selfDev: { enabled: boolean; paused?: boolean; findings: SelfFinding[]; recentlyDone: SelfFinding[]; checks?: { at: string; deep: boolean; results: Array<{ name: string; ok: boolean; detail: string; ms: number }> } | null };
+}
+
+export interface SelfFinding {
+  id: string;
+  source: 'complaint' | 'selfcheck' | 'error' | 'overview';
+  title: string;
+  detail: string;
+  evidence: string[];
+  status: 'open' | 'fixing' | 'verifying' | 'awaiting_approval' | 'merged' | 'dismissed' | 'failed';
+  attempts: number;
+  occurrences: number;
+  firstSeen: string;
+  lastSeen: string;
+  taskId: string | null;
+  branch: string | null;
+  verification: any | null;
+  note: string | null;
+}
+
+export function dismissFinding(id: string) {
+  return request<{ finding: SelfFinding }>(`/api/self/findings/${id}/dismiss`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+}
+
+export function updateFdpTask(id: string, field: 'dueDate' | 'status' | 'progress', value: string) {
+  return request<{ ok: boolean; write: any; mirror?: { attempted: boolean; ok: boolean; error?: string } }>(`/api/fdp/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ field, value, writtenBy: '本人（通知センター）' }),
+  });
+}
+
+export function retryFinding(id: string) {
+  return request<{ finding: SelfFinding }>(`/api/self/findings/${id}/retry`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+}
+
+/** 画像を添えて聞く。道具を持たない専用の口（/api/see）で、会話に残す。画像そのものは保存されない。 */
+export async function askAboutImage(input: { question: string; imageBase64: string; mime: string; conversationId: string | null }): Promise<any> {
+  const response = await authenticatedFetch('/api/see', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
+    body: JSON.stringify({ question: input.question, imageBase64: input.imageBase64, mime: input.mime, mode: 'ask', ...(input.conversationId ? { conversationId: input.conversationId } : { persist: true }) }),
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body?.error ?? `画像を送れませんでした（${response.status}）。`);
+  return body;
+}
+
+export function markNoticeRead(conversationId: string) {
+  return request<{ ok: boolean; marked: number }>('/api/notices/read', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ conversationId }),
+  });
+}
+
+export function markAllNoticesRead() {
+  return request<{ ok: boolean; marked: number }>('/api/notices/read', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ all: true }),
+  });
+}
+
+export function approveFinding(id: string, confirmProtected: boolean) {
+  return request<{ merged: boolean; head: string; restarting: boolean }>(`/api/self/findings/${id}/approve`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirmProtected }),
+  });
+}
+
+export function pauseSelfDev(paused: boolean) {
+  return request<{ enabled: boolean; paused: boolean }>('/api/self/pause', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ paused }),
+  });
+}
+
+export function recheckCenter() {
+  return request<{ ok: boolean }>('/api/center/recheck', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+}
+
+export function fetchCenter() {
+  return request<CenterSnapshot>('/api/center');
 }
 
 export function fetchOpeners() {

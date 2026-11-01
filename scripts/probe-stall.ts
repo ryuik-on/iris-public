@@ -1,3 +1,4 @@
+import { localApiFetch } from '../server/core/owner_access.js';
 /**
  * サーバが止まる瞬間を、外から測る。
  *
@@ -36,7 +37,7 @@ async function main() {
     const before = Date.now();
     let status: number | string;
     try {
-      const res = await fetch(`${BASE}/api/usage/cli`, { signal: AbortSignal.timeout(30_000) });
+      const res = await localApiFetch(`${BASE}/api/usage/cli`, { signal: AbortSignal.timeout(30_000) });
       await res.arrayBuffer();
       status = res.status;
     } catch (err) {

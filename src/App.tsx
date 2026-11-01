@@ -73,6 +73,7 @@ function coreSizeFor(): number {
 import {
   sendChatMessage,
   streamChatMessage,
+  askAboutImage,
   rememberToken,
   forgetToken,
   approveToolAction,
@@ -88,6 +89,10 @@ import {
   fetchSpeechStatus,
   fetchPendingApprovals,
   fetchOpeners,
+  takeRequestedConversation,
+  fetchCenter,
+  markNoticeRead,
+  type CenterSnapshot,
   OpenerView,
   fetchRouting,
   fetchTts,
@@ -120,8 +125,13 @@ import {
 } from './components/Telemetry';
 import {
   Send, ShieldAlert, Plus, MessageSquare, AlertTriangle, Volume2, Terminal, X,
-  Mic, ArrowUp, Sparkles, History, SlidersHorizontal, Search,
+  Mic, ArrowUp, Sparkles, History, SlidersHorizontal, Search, Bell, CalendarDays,
 } from 'lucide-react';
+import { NotificationCenter, CENTER_RAIL_GAP } from './components/NotificationCenter';
+import { WeekCalendar } from './components/WeekCalendar';
+import { HomeGlance } from './components/HomeGlance';
+import { prepareImage, firstImageFile, type PreparedImage } from './imageAttach';
+import { parseCalendarCommand } from './calendarCommand';
 
 interface ViewMessage {
   id: string;
@@ -194,6 +204,71 @@ export default function App() {
   const [deciding, setDeciding] = useState<boolean | null>(null);
   const { draft: input, setDraft: setInput, storageFailed: draftStorageFailed } = useConversationDraft(conversationId);
   const [loading, setLoading] = useState(false);
+  /**
+   * 返事を待っている途中で別の会話へ移っても、元の返事は止めない。
+   *
+   * 「いまの返事を待っているあいだは、ほかの会話へ移れません」と断っていた。
+   * 返事はサーバが最後まで作って記録するので、画面が付き合う必要は無い —— 移った
+   * 先の画面には触れず、元の会話に「作っています／できました」の印だけを付ける。
+   * `viewToken` は「いま見ている画面の世代」。移るたびに進め、古い世代の続きは
+   * 画面を書き換えない。
+   */
+  /**
+   * 通知センター。開いている間は 3 秒ごと、閉じている間は 20 秒ごとに読む（印の数のため）。
+   * 「さっきの話がどこへ行ったか分からない」「朝のまとめがどこにあるか分からない」への答えの置き場。
+   */
+  /**
+   * 画面の版を見張る。サーバの版が変わったら、手が空いたときに読み込み直す。
+   * 打ちかけ・返事待ち・承認の途中は動かさない（読んでいるものを横から奪わない）。
+   */
+  const builtAs = useRef<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const check = () =>
+      fetch('/api/build')
+        .then((r) => r.json())
+        .then((d) => {
+          if (cancelled || !d?.id) return;
+          if (builtAs.current === null) { builtAs.current = d.id; return; }
+          if (d.id !== builtAs.current && !busy.current && document.visibilityState === 'visible') window.location.reload();
+        })
+        .catch(() => {});
+    check();
+    const timer = setInterval(check, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, []);
+
+  const [centerOpen, setCenterOpen] = useState(false);
+  // 画像を添えて聞く（貼る・ドロップ・選ぶ）。外すか、新しい会話にするまで、続きの質問にも付く。
+  const [pendingImage, setPendingImage] = useState<PreparedImage | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const imageInput = useRef<HTMLInputElement>(null);
+  const attachImage = useCallback(async (file: File | null) => {
+    if (!file) return;
+    setImageError(null);
+    const prepared = await prepareImage(file);
+    if (!prepared) { setImageError('画像を読み込めませんでした。'); return; }
+    setPendingImage(prepared);
+  }, []);
+  /** 週の暦。`/カレンダー 来週` か ⌘; か、レールの予定の札から。`start` はその週の日付。 */
+  const [calendarStart, setCalendarStart] = useState<Date | null>(null);
+  const [center, setCenter] = useState<CenterSnapshot | null>(null);
+  const [centerError, setCenterError] = useState<string | null>(null);
+  const loadCenter = () =>
+    fetchCenter()
+      .then((snap) => { setCenter(snap); setCenterError(null); })
+      .catch((err: any) => setCenterError(err?.message ?? String(err)));
+  useEffect(() => {
+    loadCenter();
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') loadCenter();
+    }, centerOpen ? 3000 : 20000);
+    return () => clearInterval(timer);
+  }, [centerOpen]);
+
+  const viewToken = useRef(0);
+  const inFlight = useRef<string | null>(null);
+  const [background, setBackground] = useState<Record<string, 'running' | 'done'>>({});
   const [restoring, setRestoring] = useState(true);
   const [pendingApproval, setPendingApproval] = useState<any>(null);
   const [settings, setSettings] = useState<any>(null);
@@ -557,11 +632,13 @@ export default function App() {
         // clear two layers is what people expect.
         // 読んでいる列も。ここが抜けていたので、上のコメントが嘘になっていた。
         setReadingClosed(true);
+        setCenterOpen(false);
         return setChrome('none');
       }
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.key === '\\') { e.preventDefault(); setChrome((c) => (c === 'threads' ? 'none' : 'threads')); }
       if (e.key === "'") { e.preventDefault(); setChrome((c) => (c === 'state' ? 'none' : 'state')); }
+      if (e.key === 'j' || e.key === 'J') { e.preventDefault(); setCenterOpen((v) => !v); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -611,7 +688,9 @@ export default function App() {
         .catch(() => { if (!cancelled) setWaiting([]); });
     };
     load();
-    const timer = setInterval(load, 15000);
+    // 別の会話・サイドチャット・背景の実行が出した承認が、画面に出るまでの遅れ。十五秒だと、承認の
+    // ボタンが出るまで最大十五秒待たされた。この機械の中の軽い問い合わせなので、三秒にする。
+    const timer = setInterval(load, 3000);
     return () => { cancelled = true; clearInterval(timer); };
   }, [pendingApproval]);
 
@@ -628,6 +707,60 @@ export default function App() {
     return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
+  const detachRunning = () => {
+    const running = inFlight.current;
+    viewToken.current += 1;
+    if (running) setBackground((b) => ({ ...b, [running]: 'running' }));
+    setLoading(false);
+    setSending(false);
+    setStreamText(null);
+  };
+
+  /**
+   * いま見ている会話に、サーバの側で増えたものを取り込む。
+   *
+   * 「終わったらまた知らせます」と言われて、終わっても画面には何も出ず、聞くまで
+   * 分からなかった（利用者、2026-10-01）。知らせは会話の記録には書かれていたが、
+   * 開いている画面は一度読んだきり読み直さなかった。**自分が送っている最中は触らない**
+   * （流れてくる文と二重になる）。数が増えたときだけ入れ替える。
+   */
+  useEffect(() => {
+    if (!conversationId || restoring) return;
+    let cancelled = false;
+    const timer = setInterval(() => {
+      if (document.visibilityState !== 'visible' || loading || sending || streamText !== null) return;
+      fetchConversation(conversationId)
+        .then((view) => {
+          if (cancelled) return;
+          const next = toViewMessages(view.messages);
+          setMessages((prev) => (next.length > prev.length ? next : prev));
+          if (!pendingApproval && view.pendingApproval) setPendingApproval(view.pendingApproval);
+        })
+        .catch(() => {});
+    }, 4000);
+    return () => { cancelled = true; clearInterval(timer); };
+  }, [conversationId, restoring, loading, sending, streamText, pendingApproval]);
+
+  // 裏で続いている会話をいま見ているあいだは、記録を読み直し続ける。できたら読み直して印を外す。
+  useEffect(() => {
+    if (!conversationId) return;
+    const state = background[conversationId];
+    if (state === 'done') {
+      fetchConversation(conversationId)
+        .then((view) => { setMessages(toViewMessages(view.messages)); setPendingApproval(view.pendingApproval); })
+        .catch(() => {});
+      setBackground((b) => { const next = { ...b }; delete next[conversationId]; return next; });
+      return;
+    }
+    if (state !== 'running') return;
+    const timer = setInterval(() => {
+      fetchConversation(conversationId)
+        .then((view) => setMessages(toViewMessages(view.messages)))
+        .catch(() => {});
+    }, 3000);
+    return () => clearInterval(timer);
+  }, [conversationId, background]);
+
   const openConversation = async (id: string) => {
     /*
      * **押して何も起きない、を作らない。**
@@ -637,11 +770,11 @@ export default function App() {
      * 返事が流れている途中で別の会話へ移ると、流れてきた文が行き場を失うので
      * 移らないのは正しいが、**移らない理由は言う。**
      */
+    // 開いたら既読。知らせの会話でなければ、サーバーは何もしない。
+    void markNoticeRead(id).then(() => loadCenter()).catch(() => {});
     if (id === conversationId) { setReadingClosed(false); return; }
-    if (loading) {
-      setError('いまの返事を待っているあいだは、ほかの会話へ移れません。返事が出てから、もう一度押してください。');
-      return;
-    }
+    // 返事の途中でも移れる。元の返事は裏で続き、できたら印が付く。
+    if (loading) detachRunning();
     setError(null);
     try {
       const view = await fetchConversation(id);
@@ -686,6 +819,46 @@ export default function App() {
       localStorage.setItem(SEEN_KEY, JSON.stringify(seen));
     } catch { /* 覚えられなくても出すことはできる。次にもう一度出るだけ。 */ }
   };
+  /*
+   * 盤から「この会話を開いて」と預けられていれば開く。前に出たとき・見える
+   * ようになったとき・読み込んだとき。盤は URL を渡さず IRIS を前に出すだけ
+   * なので（新しい窓を生やさないため）、開く役はこちら。
+   */
+  useEffect(() => {
+    if (restoring) return;
+    const take = () => {
+      takeRequestedConversation()
+        .then(({ conversationId: id, view }) => {
+          if (view === 'center') setCenterOpen(true);
+          if (view === 'calendar') setCalendarStart(new Date());
+          if (!id) return;
+          markOpenerSeen(id);
+          setIncoming(null);
+          void openRef.current(id);
+        })
+        .catch(() => {});
+    };
+    take();
+    const onVisible = () => { if (document.visibilityState === 'visible') take(); };
+    window.addEventListener('focus', take);
+    document.addEventListener('visibilitychange', onVisible);
+    /*
+     * 見えている間は一秒ごとに読む。ブラウザのタブは、盤が IRIS.app を前に
+     * 出しても「前に出た」にならないので、`focus` を待っていると預かりものを
+     * 読めない（Chrome で使っていて、押しても何も変わらなかった 2026-09-30）。
+     * 隠れているタブは読まない —— 見ていない画面が先に取って行かないため。
+     */
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible') take();
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', take);
+      document.removeEventListener('visibilitychange', onVisible);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [restoring]);
+
   useEffect(() => {
     const touch = () => { lastTouched.current = Date.now(); };
     window.addEventListener('keydown', touch);
@@ -776,8 +949,9 @@ export default function App() {
   };
 
   const startNewConversation = async () => {
-    if (loading) return;
+    if (loading) detachRunning();
     setError(null);
+    setPendingImage(null);
     try {
       const view = await createConversation();
       setConversationId(view.conversation!.id);
@@ -794,9 +968,27 @@ export default function App() {
     // `spokenText` bypasses the input box: a voice request was already
     // addressed to IRIS by name, so it does not wait in the box for a press.
     const outgoing = (spokenText ?? input).trim();
-    if (!outgoing || loading || restoring || pendingApproval) return;
+    /*
+     * 画面のコマンド。模型には送らない。
+     * `/カレンダー 来週` で週の暦、`/通知` で通知センター。読み取れない語は
+     * コマンドではなく、そのまま話しかけとして送る（「来週」を頼んで今週が出ない）。
+     */
+    if (spokenText === undefined) {
+      const command = parseCalendarCommand(outgoing);
+      if (command) { setInput(''); setCalendarStart(command.start); return; }
+      if (/^\/(通知|センター|notice|center)$/i.test(outgoing)) { setInput(''); setCenterOpen(true); return; }
+    }
+    if ((!outgoing && !pendingImage) || loading || restoring || pendingApproval) return;
+    if (conversationId && background[conversationId] === 'running') {
+      setError('この会話は、まだ前の返事を作っています。できたら表示します。');
+      return;
+    }
     // 打てば読む。伏せたまま返事が来ると、届いていないように見える。
     setReadingClosed(false);
+    const token = viewToken.current;
+    const startedIn = conversationId;
+    inFlight.current = startedIn;
+    const mine = () => token === viewToken.current;
 
     const userText = outgoing;
     setError(null);
@@ -827,13 +1019,24 @@ export default function App() {
 
     try {
       // Only the current turn is sent; the server owns history and persistence.
-      const res = await streamChatMessage(userText, conversationId, spokenText ? 'voice' : 'text', {
-        accepted: () => { setSending(false); setLastProgress(Date.now()); },
-        delta: (text) => { setLastProgress(Date.now()); setStreamText((prev) => (prev ?? '') + text); },
+      const image = spokenText === undefined ? pendingImage : null;
+      const res = image
+        ? await askAboutImage({ question: userText, imageBase64: image.base64, mime: image.mime, conversationId })
+        : await streamChatMessage(userText, conversationId, spokenText ? 'voice' : 'text', {
+        accepted: () => { if (!mine()) return; setSending(false); setLastProgress(Date.now()); },
+        delta: (text) => { if (!mine()) return; setLastProgress(Date.now()); setStreamText((prev) => (prev ?? '') + text); },
         // An attempt failed and is being retried; what it had written is void.
-        reset: () => { setLastProgress(Date.now()); setStreamText(''); },
-        phase: (name) => { setLastProgress(Date.now()); setRunPhase(name); },
+        reset: () => { if (!mine()) return; setLastProgress(Date.now()); setStreamText(''); },
+        phase: (name) => { if (!mine()) return; setLastProgress(Date.now()); setRunPhase(name); },
       });
+      if (!mine()) {
+        // 別の会話へ移ったあとに終わった。移った先の画面には触らず、元の会話に
+        // 「できました」の印だけを付ける。返事そのものはサーバの記録にある。
+        const finished = res.conversationId ?? startedIn;
+        if (finished) setBackground((b) => ({ ...b, [finished]: 'done' }));
+        refreshConversationList();
+        return;
+      }
       if (spokenText === undefined) setInput('');
       setConversationId(res.conversationId);
 
@@ -868,6 +1071,11 @@ export default function App() {
 
       refreshConversationList();
     } catch (err: any) {
+      if (!mine()) {
+        // 移ったあとの失敗。元の会話の記録を読み直せば分かるので、印だけ付ける。
+        if (startedIn) setBackground((b) => ({ ...b, [startedIn]: 'done' }));
+        return;
+      }
       // Whatever was streamed is not an answer; the turn is durable server-side.
       setStreamText(null);
       setError(spokenText === undefined
@@ -879,18 +1087,27 @@ export default function App() {
           .catch(() => {});
       }
     } finally {
-      setLoading(false);
+      // 移ったあとなら、いま見ている画面の「待ち」を外してはいけない。
+      if (mine()) { setLoading(false); inFlight.current = null; }
     }
   };
 
   const handleDecision = async (approved: boolean) => {
     if (!pendingApproval) return;
+    const token = viewToken.current;
+    const mine = () => token === viewToken.current;
+    inFlight.current = conversationId;
     setLastProgress(Date.now());
     setRunPhase('tool_execution');
     setLoading(true);
     setError(null);
     try {
       const res = await approveToolAction(pendingApproval.sessionId, approved);
+      if (!mine()) {
+        if (conversationId) setBackground((b) => ({ ...b, [conversationId]: 'done' }));
+        refreshConversationList();
+        return;
+      }
       setPendingApproval(null);
       const persisted: ViewMessage[] = (res.persisted || []).map((m: StoredMessage) => ({
         id: m.id,
@@ -904,6 +1121,7 @@ export default function App() {
       }
       refreshConversationList();
     } catch (err: any) {
+      if (!mine()) return;
       setError(err.message);
       // A stale approval means server state already moved on — resync.
       if (err.code === 'stale_approval') {
@@ -918,7 +1136,7 @@ export default function App() {
         }
       }
     } finally {
-      setLoading(false);
+      if (mine()) { setLoading(false); inFlight.current = null; setDeciding(null); }
     }
   };
 
@@ -981,9 +1199,11 @@ export default function App() {
 
   /** 置き去りの確認を残さない。四秒で元に戻す。 */
   // 承認の欄が消えたら、押した記録も戻す。次に出たときに残っていない。
+  // 次の承認が続けて出たとき（承認した結果、また承認が要る道具を呼んだ）にも戻す。
+  // 「無くなったとき」だけ戻していたので、続けて出た承認は「処理中…」のまま固まった。
   useEffect(() => {
-    if (!pendingApproval) setDeciding(null);
-  }, [pendingApproval]);
+    setDeciding(null);
+  }, [pendingApproval?.sessionId]);
 
   useEffect(() => {
     if (!confirming) return;
@@ -1016,6 +1236,14 @@ export default function App() {
 
   const chromeWidth = !narrow && chrome === 'threads' ? 224 : 0;
   const statePanelWidth = !narrow && chrome === 'state' ? 344 : 0;
+  // 通知センターを開いたら、画面の右半分を会話と分け合う。右のレールの分だけ空ける。
+  const centerDockWidth = !narrow ? Math.min(Math.round(window.innerWidth * 0.5), 720) : 0;
+  const centerDocked = !narrow && centerOpen ? centerDockWidth : 0;
+
+  // ホーム：答えも通知センターも暦も出ていない、核だけの画面。
+  const readingActive = !readingClosed && (messages.length > 0 || streamText !== null);
+  const homeVisible = !narrow && !readingActive && !centerOpen && calendarStart === null && chrome === 'none';
+  const homeAttention = homeVisible && (center?.counts.approvals ?? 0) > 0;
 
   const coreState: CoreState =
     // Waiting on a person outranks everything: it is the one state where
@@ -1027,6 +1255,8 @@ export default function App() {
     : loading ? runPhase
     : tts?.speaking ? 'speaking'
     : speech?.state === 'listening' ? 'listening'
+    // ホームで、承認待ちがあるあいだは、核がそれを伝える（待っているのは人）。
+    : homeAttention ? 'approval_required'
     : 'idle';
   // `tool_execution` is defined and drawable but never derived here: the run
   // reports which tools it used after the fact, and there is no signal for a
@@ -1063,9 +1293,9 @@ export default function App() {
             IRIS
           </div>
           <p className="text-[13px] leading-relaxed text-zinc-400 text-center">
-            この端末からは、アクセストークンが必要です。
+            この画面を開くための確認が必要です。
             <br />
-            Mac の IRIS を開き、SYSTEM の一番下に表示されているものを入力してください。
+            Mac では HUD の「IRIS を開く」から自動で確認できます。別の端末では、Mac の SYSTEM に表示されるアクセストークンを入力してください。
           </p>
           <div className="hud-panel w-full flex items-center px-4 py-3 focus-within:border-sky-400/60 transition">
             {/* Sixteen pixels here too: this is the first field anyone
@@ -1092,6 +1322,7 @@ export default function App() {
   return (
     <div
       className="hud-field flex h-screen font-sans text-[var(--hud-text)] overflow-hidden"
+      data-center={centerOpen ? 'open' : undefined}
       /*
         Room for the resident band, when there is one.
         
@@ -1136,7 +1367,7 @@ export default function App() {
         className="hud-visor"
         style={{
           left: chromeWidth,
-          right: statePanelWidth,
+          right: statePanelWidth + centerDocked,
           transition: 'left 260ms cubic-bezier(0.4,0,0.2,1), right 260ms cubic-bezier(0.4,0,0.2,1)',
         }}
       >
@@ -1209,6 +1440,14 @@ export default function App() {
            * `ad5befd` から取れる（`Core.tsx` 自体も履歴にだけある —— `ab9eedf`）。
            */}
         </div>
+        {homeVisible && (
+          <HomeGlance
+            center={center}
+            onCalendar={() => setCalendarStart(new Date())}
+            onCenter={() => setCenterOpen(true)}
+            onState={() => setChrome('state')}
+          />
+        )}
       </div>
       {/*
         Both rails are hidden by default now.
@@ -1398,6 +1637,12 @@ export default function App() {
                   <div className="flex items-center gap-1.5">
                     <MessageSquare className="w-3 h-3 flex-shrink-0 opacity-50" />
                     <span className="truncate">{c.title || '無題'}</span>
+                    {background[c.id] === 'running' && (
+                      <span className="ml-auto flex-shrink-0 hud-mono text-[9px] text-sky-300 animate-pulse" title="返事を作っています">作成中</span>
+                    )}
+                    {background[c.id] === 'done' && (
+                      <span className="ml-auto flex-shrink-0 hud-mono text-[9px] text-emerald-300" title="裏で返事ができました">返事あり</span>
+                    )}
                   </div>
                   <div className="hud-mono mt-0.5 text-[9px] text-zinc-700 truncate pl-4.5">
                     {c.messageCount} · {new Date(c.updatedAt).toLocaleDateString()}
@@ -1555,6 +1800,42 @@ export default function App() {
             </button>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={() => { setReadingClosed(true); setCenterOpen(false); setCalendarStart(null); setChrome('none'); }}
+              title="ホーム（核と、今日の要点）"
+              aria-label="ホーム"
+              className="w-12 h-12 flex items-center justify-center text-[var(--hud-muted)] hover:text-sky-400 transition"
+            >
+              <svg className="w-[18px] h-[18px]" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M3 11.5 12 4l9 7.5" /><path d="M5.5 10v9.5h13V10" /><path d="M10 19.5v-5h4v5" />
+              </svg>
+            </button>
+            <button
+              type="button"
+              onClick={() => setCalendarStart((c) => (c ? null : new Date()))}
+              title="週の暦　（入力欄に /カレンダー 来週 でも）"
+              aria-label="週の暦"
+              aria-expanded={calendarStart !== null}
+              className="w-12 h-12 flex items-center justify-center text-[var(--hud-muted)] hover:text-sky-400 transition"
+            >
+              <CalendarDays className="w-[18px] h-[18px]" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setCenterOpen((v) => !v)}
+              title="通知センター　⌘J"
+              aria-label="通知センター"
+              aria-expanded={centerOpen}
+              className="relative w-12 h-12 flex items-center justify-center text-[var(--hud-muted)] hover:text-sky-400 transition"
+            >
+              <Bell className="w-[18px] h-[18px]" />
+              {center && (center.counts.unreadNotices + center.counts.approvals) > 0 && (
+                <span className="absolute top-2 right-2 min-w-[16px] h-4 px-1 rounded-full bg-sky-400 text-[10px] leading-4 text-black font-bold text-center">
+                  {center.counts.unreadNotices + center.counts.approvals}
+                </span>
+              )}
+            </button>
             <button
               type="button"
               onClick={() => setChrome((c) => c === 'state' ? 'none' : 'state')}
@@ -1926,7 +2207,20 @@ export default function App() {
             ここに置いたものは**全部すでに在る機能**で、飾りの押し場所は
             置いていない —— 押せるのに何も起きない物は、無い物より悪い。
           */}
-          <div className="hud-float hud-panel pointer-events-auto mx-auto w-full max-w-[720px] rounded-[22px] px-4 pt-3.5 pb-2.5 focus-within:border-sky-400/60 transition">
+          <div className="hud-float hud-panel pointer-events-auto mx-auto w-full max-w-[720px] rounded-[22px] px-4 pt-3.5 pb-2.5 focus-within:border-sky-400/60 transition"
+            onDragOver={(e) => { if (e.dataTransfer?.types?.includes('Files')) e.preventDefault(); }}
+            onDrop={(e) => { const f = firstImageFile(e.dataTransfer?.files, e.dataTransfer?.items); if (f) { e.preventDefault(); void attachImage(f); } }}
+          >
+            {pendingImage && (
+              <div className="mb-2 flex items-center gap-2.5 rounded-xl border border-white/10 px-2 py-1.5">
+                <img src={pendingImage.preview} alt="添付する画像" className="h-10 w-10 rounded-md object-cover" />
+                <div className="min-w-0 flex-1 text-[12px] leading-snug text-zinc-400">
+                  画像を添えています（聞くと、この画像を Claude に送ります。続きの質問にも付きます）
+                </div>
+                <button type="button" onClick={() => setPendingImage(null)} aria-label="画像を外す" title="画像を外す" className="hud-press text-zinc-500 hover:text-sky-300 text-[16px] leading-none px-1">×</button>
+              </div>
+            )}
+            {imageError && <p role="status" className="mb-2 text-[12px] text-[var(--hud-warn)]">{imageError}</p>}
             <div className="flex items-start gap-2">
               <span className="hud-mono text-sky-400/60 text-[13px] mt-[3px] select-none">›</span>
               <textarea
@@ -1937,6 +2231,7 @@ export default function App() {
                 placeholder={pendingApproval ? '承認待ち…' : 'メッセージまたは指示'}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onPaste={(e) => { const f = firstImageFile(e.clipboardData?.files, e.clipboardData?.items); if (f) { e.preventDefault(); void attachImage(f); } }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                     e.preventDefault();
@@ -1983,6 +2278,26 @@ export default function App() {
                 >
                   <Mic className="w-3.5 h-3.5" />
                 </button>
+                <button
+                  type="button"
+                  onClick={() => imageInput.current?.click()}
+                  title="画像を添えて聞く（貼り付け・ドロップでも）"
+                  aria-label="画像を添える"
+                  className={`hud-press grid place-items-center w-7 h-7 rounded-full border transition ${
+                    pendingImage ? 'border-sky-400/60 text-sky-300 bg-sky-400/10' : 'border-white/10 text-zinc-500 hover:text-sky-300 hover:border-sky-400/40'
+                  }`}
+                >
+                  <svg className="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <rect x="3" y="4" width="18" height="16" rx="2.5" /><circle cx="9" cy="10" r="1.6" /><path d="m21 16-5-5-8 9" />
+                  </svg>
+                </button>
+                <input
+                  ref={imageInput}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => { const f = e.target.files?.[0] ?? null; e.target.value = ''; void attachImage(f); }}
+                />
               </div>
 
               <div className="flex items-center gap-2.5">
@@ -2064,6 +2379,17 @@ export default function App() {
         </div>
       )}
 
+      {calendarStart && <WeekCalendar key={calendarStart.getTime()} start={calendarStart} onClose={() => setCalendarStart(null)} />}
+      <NotificationCenter
+        open={centerOpen}
+        docked={!narrow}
+        dockWidth={centerDockWidth}
+        snapshot={center}
+        error={centerError}
+        onClose={() => setCenterOpen(false)}
+        onRefresh={() => void loadCenter()}
+        onOpenConversation={(id) => { setCenterOpen(false); void openConversation(id); }}
+      />
     </div>
   );
 }

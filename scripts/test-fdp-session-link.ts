@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, symlinkSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { sessionsFor } from '../server/core/fdp_session_link.js';
+import { sessionsFor, clearLinkMemo } from '../server/core/fdp_session_link.js';
 
 let passed = 0, failed = 0;
 const check = (name: string, ok: boolean) => { ok ? passed++ : failed++; console.log(`  ${ok ? '✓' : '✗'} ${name}`); };
@@ -50,6 +50,16 @@ console.log('▸ 無いものは無い');
 {
   check('作業場所が無ければ空', sessionsFor(null, [S('a', plan)]).length === 0);
   check('消えた資料入れなら空', sessionsFor({ path: join(base, 'gone'), kind: 'folder' }, [S('a', plan)]).length === 0);
+}
+console.log('▸ 同じ道は覚える（要求ごとに fs を叩き直さない）');
+{
+  const gone = join(base, 'soon-gone'); mkdirSync(gone);
+  clearLinkMemo();
+  check('最初は当たる', sessionsFor({ path: gone, kind: 'folder' }, [S('a', gone)]).length === 1);
+  rmSync(gone, { recursive: true });
+  check('覚えている間は fs を見ない', sessionsFor({ path: gone, kind: 'folder' }, [S('a', gone)]).length === 1);
+  clearLinkMemo();
+  check('捨てれば消えたことが分かる', sessionsFor({ path: gone, kind: 'folder' }, [S('a', gone)]).length === 0);
 }
 rmSync(base, { recursive: true });
 console.log(`\nFDP session link: ${passed} passed, ${failed} failed`);
